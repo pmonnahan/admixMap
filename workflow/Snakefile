@@ -1,0 +1,130 @@
+# Load modules
+import glob
+import os
+import math
+import subprocess
+import pdb
+import shutil
+
+# Get the date
+from datetime import datetime
+i = datetime.now()
+TIME = i.strftime('%Y-%m-%d')
+
+# Specify config file
+configfile: "workflow/config.yml"
+
+# Parse config.yml file
+QUERY = config['query']
+RFMIX = config['rfmix']
+PREDICTORS = config['predictors']
+SAMPLES = f"accessory/samples.txt"
+
+# Make subdirectories
+dirs = ["input", "accessory", "plink", "BLINK", "OandE", "data"]
+for directory in dirs:
+    if not os.path.exists(directory): os.mkdir(directory)
+
+if config['singularity']['use_singularity'] == 'true' and config['singularity']['image'] != "none":
+    bind_paths = ",".join(set([os.path.dirname(x) for x in [QUERY]] + dirs + [RFMIX]))
+    CMD_PREFIX = f"set +u; module load singularity; singularity exec --bind {bind_paths} {config['singularity']['image']}"
+    CODE = config['singularity']['code']
+else:
+    CMD_PREFIX = config['cmd_prefix']
+    CODE = config['dir']['code']
+
+BASE = config['outname']  # Base prefix used for naming files is set as basename of
+INPUT = f"input/{BASE}"
+
+# Determine number of individuals from .fam file
+ind_num = 0
+with open(f"{QUERY}.fam", 'r') as fam_file:
+    for ind in fam_file: ind_num += 1
+comparisons = ind_num * (ind_num - 1) / 2
+comparisons_per_job = int(config['ibs.cpj'])
+num_jobs = math.ceil(comparisons / comparisons_per_job)
+
+if config['local_run'] == 'true':
+    localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, blink_GWAS
+else:
+    localrules: all
+
+def get_all_inputs(wildcards):
+    input_list = [f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}.bed", f"plink/{BASE}.genome", f"{BASE}.admixmap.txt", f"BLINK/{BASE}_GWAS_result.txt"] + expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs + 1))
+    return(input_list)
+
+def get_cM_inputs(wildcards):
+    input_list = [f"{QUERY}.bed"]
+    if config['match_controls'] == 'true':
+        input_list.append(f"plink/{BASE}.genome.gz")
+    return(input_list)
+
+rule all:
+    input: get_all_inputs
+
+rule clean:
+    shell:
+        "rm vcfs/*; rm bcfs/*; rm rfmix/*; rm beds/*; rm karyograms/*"
+
+rule calcFreq:
+    input: f"{QUERY}.bed"
+    output: f"plink/{BASE}.frq"
+    shell:
+        f"{CMD_PREFIX} plink --bfile {QUERY} --freq --out plink/{BASE}"
+
+rule calcIBS:
+    input: f"{QUERY}.bed", f"plink/{BASE}.frq"
+    output: f"plink/{BASE}.genome.{{job}}"
+    shell:
+        f"{CMD_PREFIX} plink --bfile {QUERY} --read-freq plink/{BASE}.frq --genome --parallel {{wildcards.job}} {num_jobs} --out plink/{BASE}"
+
+rule catIBS:
+    input: expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs +1))
+    output: f"plink/{BASE}.genome"
+    shell: f"{CMD_PREFIX} cat plink/{BASE}.genome.* | gzip > {BASE}.genome.gz; mv {BASE}.genome.gz plink"
+
+#TODO: rule filter_related_individuals_using_IBS_results
+#Filter based on values of PI_HAT?
+
+rule controlMatch:
+    # TODO: add option for user to provide samples file
+    input: get_cM_inputs
+    output: f"accessory/samples.txt", f"input/{BASE}.bed"
+    run:
+        if config['match_controls'] == 'true':
+            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; {CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples.txt; {CMD_PREFIX} plink --bfile {QUERY} --keep accessory/samples.txt --make-bed --out input/{BASE}")
+        else:
+            shell(f"{CMD_PREFIX} awk \'{{print $2}}\' {QUERY}.fam > accessory/samples.txt; {CMD_PREFIX} plink --bfile {QUERY} --make-bed --out input/{BASE}")
+            SAMPLES = 'all'
+
+rule calcPCA:
+    input: f"input/{BASE}.bed"
+    output: f"plink/{BASE}.eigenvec"
+    shell:
+        f"{CMD_PREFIX} plink --bfile {QUERY} --pca --out plink/{BASE}"
+
+rule admixMap:
+    input: "accessory/samples.txt"
+    output: f"{BASE}.admixmap.txt"
+    threads: int(config['admixMapping']['cores'])
+    shell: # CMD below is not done
+        f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s {SAMPLES} -f {QUERY}.fam -o {BASE}.admixmap.txt -P {PREDICTORS} -c {{threads}} -t data/"
+
+rule blink_convert:
+    input: f"input/{BASE}.bed", f"plink/{BASE}.eigenvec"
+    output: f"BLINK/{BASE}.pos"
+    params:
+        pc_cols=int(config['gwas']['pc_num']) + 1
+    run:
+        with open('blink_convert.sh', 'w') as temp_sh:
+            temp_sh.write(f"cp -r {config['gwas']['blink_dir']} .; cp input/{BASE}* BLINK; cut -f -{{params.pc_cols}} {{input[1]}} > BLINK/{BASE}.cov; cd BLINK; ./blink_linux --file {BASE} --compress --plink")
+        shell(f"{CMD_PREFIX} sh blink_convert.sh")
+        #shell(f"; {CMD_PREFIX} ".join([f"{CMD_PREFIX} cp -r {config['gwas']['blink_dir']} .", "cp input/{BASE}* BLINK", f"cut -f -{{params.pc_cols}} {{input[1]}} > BLINK/{BASE}.cov", "cd BLINK", f"./blink_linux --file {BASE} --compress --plink", ]))
+
+rule blink_GWAS:
+    input: f"BLINK/{BASE}.pos"
+    output: f"BLINK/{BASE}_GWAS_result.txt"
+    run:
+        with open('blink_gwas.sh', 'w') as temp_sh:
+            temp_sh.write(f"cd BLINK; ./blink_linux --file {BASE} --binary --gwas --out {BASE}_GWAS_result.txt")
+        shell(f"{CMD_PREFIX} sh blink_gwas.sh")

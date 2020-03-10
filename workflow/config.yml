@@ -1,0 +1,20 @@
+#Modify all lines indicated with MODIFY
+outname: "AncInf" # MODIFY: prefix used for naming output
+query: "PATH_TO_PLINK_PREFIX" #MODIFY: Prefix for PLINK files containing all of the query samples for ancestry inference
+rfmix: "OUTPUT_DIRECTORY_OF RFMIX"
+ibs.cpj: '10000' # number of comparisons per job for IBS calculation
+match_controls: 'true'
+predictors: 'sex,AFR,AFR.glob'
+singularity:
+  use_singularity: 'true'
+  image: 'DIRECTORY_CONTAINING/AncestryInference.sif' # MODIFY
+  code: '/scripts/'
+samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
+admixMapping:
+  cores: '12'
+cmd_prefix: "module load plink/1.90b6.10; module load htslib/1.6; module load bcftools/1.9;"
+gwas:
+  pc_num: '4'
+  blink_dir: "/usr/local/bin/BLINK"
+  cores: '8'
+local_run: 'false'
