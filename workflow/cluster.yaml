@@ -9,6 +9,15 @@ __default__:
   o: 'OandE/{rule}.{wildcards}.out'
   e: 'OandE/{rule}.{wildcards}.err'
 
+filter_sHWE_SNPs:
+  l: 'walltime=06:00:00,mem=16gb'
+
+LD_prune:
+  l: 'walltime=06:00:00,mem=16gb'
+
+structHWE:
+  l: 'walltime=06:00:00,mem=32gb'
+
 admixMap:
   l: 'walltime=24:00:00,pmem=2500mb'
 

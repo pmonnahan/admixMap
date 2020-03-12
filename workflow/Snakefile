@@ -21,13 +21,13 @@ PREDICTORS = config['predictors']
 SAMPLES = f"accessory/samples.txt"
 
 # Make subdirectories
-dirs = ["input", "accessory", "plink", "BLINK", "OandE", "data"]
+dirs = ["input", "accessory", "plink", "BLINK", "OandE", "data", "sHWE"]
 for directory in dirs:
     if not os.path.exists(directory): os.mkdir(directory)
 
 if config['singularity']['use_singularity'] == 'true' and config['singularity']['image'] != "none":
     bind_paths = ",".join(set([os.path.dirname(x) for x in [QUERY]] + dirs + [RFMIX]))
-    CMD_PREFIX = f"set +u; module load singularity; singularity exec --bind {bind_paths} {config['singularity']['image']}"
+    CMD_PREFIX = f"set +u; {config['singularity']['module']}; singularity exec --bind {bind_paths} {config['singularity']['image']}"
     CODE = config['singularity']['code']
 else:
     CMD_PREFIX = config['cmd_prefix']
@@ -41,7 +41,7 @@ ind_num = 0
 with open(f"{QUERY}.fam", 'r') as fam_file:
     for ind in fam_file: ind_num += 1
 comparisons = ind_num * (ind_num - 1) / 2
-comparisons_per_job = int(config['ibs.cpj'])
+comparisons_per_job = int(config['IBD']['cpj'])
 num_jobs = math.ceil(comparisons / comparisons_per_job)
 
 if config['local_run'] == 'true':
@@ -50,11 +50,13 @@ else:
     localrules: all
 
 def get_all_inputs(wildcards):
-    input_list = [f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}.bed", f"plink/{BASE}.genome", f"{BASE}.admixmap.txt", f"BLINK/{BASE}_GWAS_result.txt"] + expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs + 1))
+    input_list = [f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}.bed", f"plink/{BASE}.genome", f"{BASE}.admixmap.txt", f"BLINK/{BASE}_GWAS_result.txt"]
+    input_list += expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs + 1))
+    input_list += expand(f"sHWE/{BASE}_sHWE_{k}", k=config['sHWE']['pop_nums'].split(","))
     return(input_list)
 
 def get_cM_inputs(wildcards):
-    input_list = [f"{QUERY}.bed"]
+    input_list = [ f"input/{BASE}_LDprune_IBDflt.bed"]
     if config['match_controls'] == 'true':
         input_list.append(f"plink/{BASE}.genome.gz")
     return(input_list)
@@ -64,27 +66,57 @@ rule all:
 
 rule clean:
     shell:
-        "rm vcfs/*; rm bcfs/*; rm rfmix/*; rm beds/*; rm karyograms/*"
+        "rm input/*; rm plink/*; rm BLINK/*; rm data/*"
+
+rule LD_prune: #Not tested...I'm not sure exclude option will work
+    input: f"{QUERY}.bed"
+    output: f"plink/{BASE}_LDprune.bed"
+    params:
+        WS = config['LD_pruning']['window_size'],
+        SS = config['LD_pruning']['step_size'],
+        RT = config['LD_pruning']['r2_treshold']
+    shell:
+        f"{CMD_PREFIX} plink --bfile {QUERY} --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep ; {CMD_PREFIX} plink --bfile {QUERY} --extract plink/{BASE}.LDkeep --out plink/{BASE}_LDprune"
+
+#TODO: add in optional(?) final round of QC.  Assumption is that its a single merged dataset with no need for ref/alt fixing.  sHWE calculations can be performed on just controls
+rule structHWE:
+    input: f"plink/{BASE}_LDprune.bed"
+    output: f"sHWE/{BASE}_sHWE_{k}"
+    shell:
+        f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/{BASE}_LDprune -d {{wildcards.k}} -o sHWE/{BASE}_sHWE_{{wildcards.k}}"
+
+rule filter_sHWE_SNPs:
+    input: f"plink/{BASE}_LDprune.bed", f"sHWE/{BASE}_sHWE_{k}"
+    output: f"plink/{BASE}_LDp_sHWE.bed"
+    shell:
+        f"{CMD_PREFIX} Rscript {CODE}/get_sHWE_SNPs.R -o sHWE/fltd_SNPs.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/fltd_SNPs.txt --make-bed --out plink/{BASE}_LDp_sHWE"
 
 rule calcFreq:
-    input: f"{QUERY}.bed"
+    input: f"plink/{BASE}_LDp_sHWE.bed"
     output: f"plink/{BASE}.frq"
     shell:
-        f"{CMD_PREFIX} plink --bfile {QUERY} --freq --out plink/{BASE}"
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --freq --out plink/{BASE}"
 
 rule calcIBS:
-    input: f"{QUERY}.bed", f"plink/{BASE}.frq"
+    input: f"plink/{QUERY}_LDprune.bed", f"plink/{BASE}.frq"
     output: f"plink/{BASE}.genome.{{job}}"
     shell:
-        f"{CMD_PREFIX} plink --bfile {QUERY} --read-freq plink/{BASE}.frq --genome --parallel {{wildcards.job}} {num_jobs} --out plink/{BASE}"
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --read-freq plink/{BASE}.frq --genome --parallel {{wildcards.job}} {num_jobs} --out plink/{BASE}"
 
 rule catIBS:
     input: expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs +1))
-    output: f"plink/{BASE}.genome"
+    output: f"plink/{BASE}.genome.gz"
     shell: f"{CMD_PREFIX} cat plink/{BASE}.genome.* | gzip > {BASE}.genome.gz; mv {BASE}.genome.gz plink"
 
 #TODO: rule filter_related_individuals_using_IBS_results
 #Filter based on values of PI_HAT?
+rule IBD_filter:
+    input: f"plink/{BASE}_LDprune.bed", f"plink/{BASE}.genome.gz"
+    output: f"plink/{BASE}_LDprune_IBDflt.bed"
+    params:
+        awk_string = "\'{{if($10>" + config['IBD']['pi_hat'] + " || $8>" + config['IBD']['ibd1'] + ") print"
+    shell:
+        f"zcat {{input[1]}} | awk {{params.awk_string}} "
 
 rule controlMatch:
     # TODO: add option for user to provide samples file
@@ -92,16 +124,16 @@ rule controlMatch:
     output: f"accessory/samples.txt", f"input/{BASE}.bed"
     run:
         if config['match_controls'] == 'true':
-            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; {CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples.txt; {CMD_PREFIX} plink --bfile {QUERY} --keep accessory/samples.txt --make-bed --out input/{BASE}")
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; {CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_IBDflt --keep accessory/samples.txt --make-bed --out input/{BASE}_MapRdy")
         else:
-            shell(f"{CMD_PREFIX} awk \'{{print $2}}\' {QUERY}.fam > accessory/samples.txt; {CMD_PREFIX} plink --bfile {QUERY} --make-bed --out input/{BASE}")
+            shell(f"{CMD_PREFIX} awk \'{{print $2}}\' input/{BASE}_LDprune_IBDflt.fam > accessory/samples.txt; {CMD_PREFIX} plink --bfile input/{BASE}_LDprune_IBDflt --make-bed --out input/{BASE}_MapRdy")
             SAMPLES = 'all'
 
 rule calcPCA:
-    input: f"input/{BASE}.bed"
+    input: f"input/{BASE}_MapRdy.bed"
     output: f"plink/{BASE}.eigenvec"
     shell:
-        f"{CMD_PREFIX} plink --bfile {QUERY} --pca --out plink/{BASE}"
+        f"{CMD_PREFIX} plink --bfile input/{BASE}_MapRdy --pca --out plink/{BASE}"
 
 rule admixMap:
     input: "accessory/samples.txt"
@@ -111,7 +143,7 @@ rule admixMap:
         f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s {SAMPLES} -f {QUERY}.fam -o {BASE}.admixmap.txt -P {PREDICTORS} -c {{threads}} -t data/"
 
 rule blink_convert:
-    input: f"input/{BASE}.bed", f"plink/{BASE}.eigenvec"
+    input: f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.eigenvec"
     output: f"BLINK/{BASE}.pos"
     params:
         pc_cols=int(config['gwas']['pc_num']) + 1

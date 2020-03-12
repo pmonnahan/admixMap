@@ -2,13 +2,23 @@
 outname: "AncInf" # MODIFY: prefix used for naming output
 query: "PATH_TO_PLINK_PREFIX" #MODIFY: Prefix for PLINK files containing all of the query samples for ancestry inference
 rfmix: "OUTPUT_DIRECTORY_OF RFMIX"
-ibs.cpj: '10000' # number of comparisons per job for IBS calculation
+LD_pruning:
+  window_size: "50"
+  step_size: "5"
+  r2_threshold: "0.3"
+sHWE:
+  pop_nums: '2,4,6,8,10,12,14' # From these choices, the pipeline will try to find the optimal number of populations to use in latent factor analysis used in the structured HWE procedure
+IBD:
+  cpj: '10000' # number of comparisons per job for IBS calculation
+  pi_hat: '0.9'
+  ibd1: '0.2'
 match_controls: 'true'
 predictors: 'sex,AFR,AFR.glob'
 singularity:
   use_singularity: 'true'
   image: 'DIRECTORY_CONTAINING/AncestryInference.sif' # MODIFY
   code: '/scripts/'
+  module: 'module load singularity'
 samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
 admixMapping:
   cores: '12'
