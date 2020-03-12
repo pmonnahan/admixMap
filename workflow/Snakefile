@@ -21,7 +21,7 @@ PREDICTORS = config['predictors']
 SAMPLES = f"accessory/samples.txt"
 
 # Make subdirectories
-dirs = ["input", "accessory", "plink", "BLINK", "OandE", "data", "sHWE"]
+dirs = ["input", "accessory", "plink", "BLINK", "OandE", "data", "sHWE", "scripts"]
 for directory in dirs:
     if not os.path.exists(directory): os.mkdir(directory)
 
@@ -50,13 +50,14 @@ else:
     localrules: all
 
 def get_all_inputs(wildcards):
-    input_list = [f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}.bed", f"plink/{BASE}.genome", f"{BASE}.admixmap.txt", f"BLINK/{BASE}_GWAS_result.txt"]
+    input_list = [f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.genome.gz", f"{BASE}.admixmap.txt", f"BLINK/{BASE}_GWAS_result.txt"]
     input_list += expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs + 1))
-    input_list += expand(f"sHWE/{BASE}_sHWE_{k}", k=config['sHWE']['pop_nums'].split(","))
+    input_list += expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))
+    print(input_list)
     return(input_list)
 
 def get_cM_inputs(wildcards):
-    input_list = [ f"input/{BASE}_LDprune_IBDflt.bed"]
+    input_list = [ f"plink/{BASE}_LDprune_IBDflt.bed"]
     if config['match_controls'] == 'true':
         input_list.append(f"plink/{BASE}.genome.gz")
     return(input_list)
@@ -70,26 +71,32 @@ rule clean:
 
 rule LD_prune: #Not tested...I'm not sure exclude option will work
     input: f"{QUERY}.bed"
-    output: f"plink/{BASE}_LDprune.bed"
+    output: f"plink/{BASE}_LDprune_ctrls.bed", f"plink/{BASE}_LDprune.bed"
     params:
         WS = config['LD_pruning']['window_size'],
         SS = config['LD_pruning']['step_size'],
-        RT = config['LD_pruning']['r2_treshold']
+        RT = config['LD_pruning']['r2_threshold'],
+        awk_string = "\'{if($6==1) print $1,$2}' " + f"plink/{BASE}_LDprune.fam > accessory/control_samples.txt"
     shell:
-        f"{CMD_PREFIX} plink --bfile {QUERY} --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep ; {CMD_PREFIX} plink --bfile {QUERY} --extract plink/{BASE}.LDkeep --out plink/{BASE}_LDprune"
+        f"{CMD_PREFIX} plink --bfile {QUERY} --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep ; {CMD_PREFIX} plink --bfile {QUERY} --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune; {CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --keep accessory/control_samples.txt --geno 0.0 --make-bed --out plink/{BASE}_LDprune_ctrls"
 
 #TODO: add in optional(?) final round of QC.  Assumption is that its a single merged dataset with no need for ref/alt fixing.  sHWE calculations can be performed on just controls
 rule structHWE:
-    input: f"plink/{BASE}_LDprune.bed"
-    output: f"sHWE/{BASE}_sHWE_{k}"
+    input: f"plink/{BASE}_LDprune_ctrls.bed"
+    output: f"sHWE/{BASE}_sHWE_{{k}}"
+
     shell:
-        f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/{BASE}_LDprune -d {{wildcards.k}} -o sHWE/{BASE}_sHWE_{{wildcards.k}}"
+        f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/{BASE}_LDprune_ctrls -d {{wildcards.k}} -o sHWE/{BASE}_sHWE_{{wildcards.k}}"
 
 rule filter_sHWE_SNPs:
-    input: f"plink/{BASE}_LDprune.bed", f"sHWE/{BASE}_sHWE_{k}"
+    input: f"plink/{BASE}_LDprune_ctrls.bed", expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))
     output: f"plink/{BASE}_LDp_sHWE.bed"
+    params:
+        input_string = ",".join(expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))),
+        threshold = config['sHWE']['threshold'],
+        bins = config['sHWE']['bins']
     shell:
-        f"{CMD_PREFIX} Rscript {CODE}/get_sHWE_SNPs.R -o sHWE/fltd_SNPs.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/fltd_SNPs.txt --make-bed --out plink/{BASE}_LDp_sHWE"
+        f"{CMD_PREFIX} Rscript {CODE}/get_sHWE_SNPs.R -p plink/{BASE}_LDprune_ctrls -i {{params.input_string}} -t {{params.threshold}} -b {{params.bins}} -o sHWE/fltd_SNPs.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/fltd_SNPs.txt --make-bed --out plink/{BASE}_LDp_sHWE"
 
 rule calcFreq:
     input: f"plink/{BASE}_LDp_sHWE.bed"
@@ -98,7 +105,7 @@ rule calcFreq:
         f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --freq --out plink/{BASE}"
 
 rule calcIBS:
-    input: f"plink/{QUERY}_LDprune.bed", f"plink/{BASE}.frq"
+    input: f"plink/{BASE}_LDprune.bed", f"plink/{BASE}.frq"
     output: f"plink/{BASE}.genome.{{job}}"
     shell:
         f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --read-freq plink/{BASE}.frq --genome --parallel {{wildcards.job}} {num_jobs} --out plink/{BASE}"
@@ -121,7 +128,7 @@ rule IBD_filter:
 rule controlMatch:
     # TODO: add option for user to provide samples file
     input: get_cM_inputs
-    output: f"accessory/samples.txt", f"input/{BASE}.bed"
+    output: f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed"
     run:
         if config['match_controls'] == 'true':
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; {CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_IBDflt --keep accessory/samples.txt --make-bed --out input/{BASE}_MapRdy")
@@ -140,7 +147,7 @@ rule admixMap:
     output: f"{BASE}.admixmap.txt"
     threads: int(config['admixMapping']['cores'])
     shell: # CMD below is not done
-        f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s {SAMPLES} -f {QUERY}.fam -o {BASE}.admixmap.txt -P {PREDICTORS} -c {{threads}} -t data/"
+        f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s {SAMPLES} -f input/{BASE}_MapRdy.fam -o {BASE}.admixmap.txt -P {PREDICTORS} -c {{threads}} -t data/"
 
 rule blink_convert:
     input: f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.eigenvec"
