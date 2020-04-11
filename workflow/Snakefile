@@ -84,7 +84,6 @@ rule LD_prune: #Not tested...I'm not sure exclude option will work
 rule structHWE:
     input: f"plink/{BASE}_LDprune_ctrls.bed"
     output: f"sHWE/{BASE}_sHWE_{{k}}"
-
     shell:
         f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/{BASE}_LDprune_ctrls -d {{wildcards.k}} -o sHWE/{BASE}_sHWE_{{wildcards.k}}"
 
