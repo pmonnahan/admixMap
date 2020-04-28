@@ -12,7 +12,7 @@ sHWE:
   bins: '30'
 IBD:
   cpj: '10000' # number of comparisons per job for IBS calculation
-  pi_hat: '0.9'
+  pi_hat: '0.125'
   ibd1: '0.2'
 match_controls: 'true'
 predictors: 'sex,AFR,AFR.glob'

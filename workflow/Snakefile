@@ -50,14 +50,14 @@ else:
     localrules: all
 
 def get_all_inputs(wildcards):
-    input_list = [f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.genome.gz", f"{BASE}.admixmap.txt", f"BLINK/{BASE}_GWAS_result.txt"]
+    input_list = [f"{BASE}-rulegraph.png", f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.genome.gz", f"{BASE}.admixmap.txt", f"BLINK/{BASE}_GWAS_result.txt"]
     input_list += expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs + 1))
     input_list += expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))
     print(input_list)
     return(input_list)
 
 def get_cM_inputs(wildcards):
-    input_list = [ f"plink/{BASE}_LDprune_IBDflt.bed"]
+    input_list = [ f"plink/{BASE}_LDp_sHWE_IBDflt.bed"]
     if config['match_controls'] == 'true':
         input_list.append(f"plink/{BASE}.genome.gz")
     return(input_list)
@@ -68,6 +68,11 @@ rule all:
 rule clean:
     shell:
         "rm input/*; rm plink/*; rm BLINK/*; rm data/*"
+
+rule make_rulegraph:
+    output: f"{BASE}-rulegraph.png"
+    params: mod_cmd = CMD_PREFIX.replace(f"set +u; {config['singularity']['module']};", "")
+    shell: "snakemake --rulegraph --configfile workflow/config.yml | {params.mod_cmd} dot -Tpng > {output}"
 
 rule LD_prune: #Not tested...I'm not sure exclude option will work
     input: f"{QUERY}.bed"
@@ -104,10 +109,10 @@ rule calcFreq:
         f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --freq --out plink/{BASE}"
 
 rule calcIBS:
-    input: f"plink/{BASE}_LDprune.bed", f"plink/{BASE}.frq"
+    input: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}.frq"
     output: f"plink/{BASE}.genome.{{job}}"
     shell:
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --read-freq plink/{BASE}.frq --genome --parallel {{wildcards.job}} {num_jobs} --out plink/{BASE}"
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --read-freq plink/{BASE}.frq --genome --parallel {{wildcards.job}} {num_jobs} --out plink/{BASE}"
 
 rule catIBS:
     input: expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs +1))
@@ -115,14 +120,13 @@ rule catIBS:
     shell: f"{CMD_PREFIX} cat plink/{BASE}.genome.* | gzip > {BASE}.genome.gz; mv {BASE}.genome.gz plink"
 
 #TODO: rule filter_related_individuals_using_IBS_results
-#Filter based on values of PI_HAT?
 rule IBD_filter:
-    input: f"plink/{BASE}_LDprune.bed", f"plink/{BASE}.genome.gz"
-    output: f"plink/{BASE}_LDprune_IBDflt.bed"
+    input: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}.genome.gz"
+    output: f"plink/{BASE}_LDp_sHWE_IBDflt.bed"
     params:
-        awk_string = "\'{{if($10>" + config['IBD']['pi_hat'] + " || $8>" + config['IBD']['ibd1'] + ") print"
+        awk_string = "\'{{if($10>" + config['IBD']['pi_hat'] + ") print $0}}\' > accessory/related_IBS_results.txt"
     shell:
-        f"zcat {{input[1]}} | awk {{params.awk_string}} "
+        f"zcat {{input[1]}} | awk {{params.awk_string}}; {CMD_PREFIX} Rscript scripts/filter_relateds.R -r accessory/related_IBS_results.txt -o accessory/excluded_related_samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --remove accessory/excluded_related_samples.txt --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt"
 
 rule controlMatch:
     # TODO: add option for user to provide samples file
@@ -130,9 +134,9 @@ rule controlMatch:
     output: f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed"
     run:
         if config['match_controls'] == 'true':
-            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; {CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_IBDflt --keep accessory/samples.txt --make-bed --out input/{BASE}_MapRdy")
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; {CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep accessory/samples.txt --make-bed --out input/{BASE}_MapRdy")
         else:
-            shell(f"{CMD_PREFIX} awk \'{{print $2}}\' input/{BASE}_LDprune_IBDflt.fam > accessory/samples.txt; {CMD_PREFIX} plink --bfile input/{BASE}_LDprune_IBDflt --make-bed --out input/{BASE}_MapRdy")
+            shell(f"{CMD_PREFIX} awk \'{{print $2}}\' input/{BASE}_LDp_sHWE_IBDflt.fam > accessory/samples.txt; {CMD_PREFIX} plink --bfile input/{BASE}_LDp_sHWE_IBDflt --make-bed --out input/{BASE}_MapRdy")
             SAMPLES = 'all'
 
 rule calcPCA:
