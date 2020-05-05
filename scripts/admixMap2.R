@@ -1,4 +1,4 @@
-.libPaths(c("/usr/local/lib/R/site-library", .libPaths())) # This is necessary so that singularity doesn't look in bound home directory for libraries.  The pre-pended directory ought to be the one WITHIN the singularity image.
+.libPaths(c("/usr/local/lib/R/site-library", .libPaths()))
 
 suppressPackageStartupMessages(library(stringr))
 suppressPackageStartupMessages(library(magrittr))
@@ -22,8 +22,6 @@ option_list <- list(
               help="plink .fam file containing case/control or phenotype values and sex"),
   make_option(c("-d", "--inputDirectory"), 
               help="Directory containing output of RFMix"),
-  make_option(c("-t", "--tmpDirectory"), default="-9",
-              help="Directory containing temporary output of preMunge function"),
   make_option(c("-o", "--outPrefix"), default="AdmixMap", 
               help = "output prefix"),
   make_option(c("-s", "--samplesFile"), default="all", 
@@ -41,8 +39,6 @@ option_list <- list(
 opt <- parse_args(OptionParser(option_list=option_list))
 registerDoParallel(cores = as.numeric(opt$cores))
 predictors = strsplit(opt$Predictors, ",")[[1]]
-if (opt$tmpDirectory == "-9"){opt$tmpDirectory = opt$inputDirectory}
-
 ######################### END: Read in arguments #########################
 
 ######################### Define functions #########################
@@ -59,37 +55,38 @@ for (i in 1:length(files)){
   DF = rbind(DF, dat)
 }
 if (samples != "all"){
+  samples = read.table(samples)
   DF %<>% filter(V1 %in% samples$V1)
 }
-DF %<>% gather(pop, ancestry, -V1) %>% group_by(V1, pop) %>% summarize(ancestry = mean(ancestry)) %>% spread(pop,ancestry)
+DF %<>% pivot_longer(-V1, names_to="pop", values_to="ancestry") %>% group_by(V1, pop) %>% summarize(ancestry = mean(ancestry)) %>% spread(pop,ancestry)
 colnames( DF ) <- unlist(header)
 return(DF)
 }
 
 readMSP = function(filename, cases=NA, filter_case = FALSE, label_case = TRUE){
   q1h = read.table(filename, header=F, comment.char = "", nrows=2, fill = TRUE, stringsAsFactors = FALSE)
-  q1p = q1h[1,] %>% gather() %>% filter(value != "") %>% slice(3:n()) %>% separate(value, c("Pop","anc"))
+  q1p = q1h[1,] %>% pivot_longer(colnames(q1h)) %>% filter(value != "") %>% separate(value, c("Pop","anc")) %>% filter(row_number()>2)
   q1h = q1h[2,-6]
   q1 = read.table(filename, header=F, comment.char = "", skip = 2)
   colnames( q1 ) <- unlist(q1h)
-  q1 %<>% gather(sample, anc, -c(`#chm`,spos,epos,sgpos,egpos,snps))
+  q1 %<>% pivot_longer(-c(`#chm`,spos,epos,sgpos,egpos,snps), names_to="sample", values_to="anc")
   q1 %<>% separate(sample, c("sample","hap"),"[.]") %>% mutate(chm = `#chm`) %>% select(-`#chm`)
-  q1 %<>% group_by(chm,spos,epos,sgpos,egpos,snps, sample) %>% count(anc) %>% mutate(Pop = q1p[q1p$anc == anc,]$Pop) %>% select(-anc) %>% spread(Pop,n, fill = 0) %>% ungroup()
+  q1 %<>% group_by(chm,spos,epos,sgpos,egpos,snps, sample) %>% count(anc) %>% ungroup() %>% mutate(anc = as.character(anc)) %>% left_join(q1p, by = "anc") %>% select(-c(anc,name)) %>% pivot_wider(id_cols = c(chm,spos,epos,sgpos, egpos,snps,sample), names_from=Pop, values_from=n, values_fill = list(n=0))
 
   return(q1)
 }
 
-preMunge = function(fileDir, samples, fam_pheno, other_pheno, tmp_dir){
-  if (samples != "all"){ #Get sample name from V2
-    samples = read.table(opt$samplesFile, comment.char = "`", sep = "", stringsAsFactors= F)
-    if (ncol(samples)==2){samples %<>% select(V2) %>% mutate(V1 = V2) %>% select(V1)}
-  }
+preMunge = function(fileDir, samples, fam_pheno, other_pheno){
   Q = getGlobalAnc(fileDir, samples)
   pdat = read.table(fam_pheno, comment.char = "")
   pdat %<>% mutate(sample = V2, sex = V5, pheno = V6 - 1) %>% filter(pheno >= 0) %>% left_join(Q, by="sample")
   if (other_pheno != "none"){
     odat = read.table(other_pheno, head = T)
     pdat %<>% left_join(odat, by="sample")
+  }
+  
+  if (samples != "all"){
+    samples = read.table(samples, comment.char = "")
   }
   
   files = list.files(fileDir, pattern = "\\.msp.tsv$")
@@ -101,7 +98,7 @@ preMunge = function(fileDir, samples, fam_pheno, other_pheno, tmp_dir){
     if (samples != "all"){
       anc_dat %<>% filter(sample %in% samples$V1)
     }
-    write.table(anc_dat, paste0(tmp_dir, str_replace(basename(in_name), ".msp.tsv", ".dat")), quote=F, row.names = F, col.names = T)
+    write.table(anc_dat, str_replace(in_name, ".msp.tsv", ".dat"), quote=F, row.names = F, col.names = T)
   }  
 }
 
@@ -134,11 +131,12 @@ calcGLM = function(fileDir, predictors, family = "binomial", random = -9){
 
 ######################### Run main components ###########################
 if (opt$mode != 'stats'){
-  preMunge(opt$inputDirectory, opt$samplesFile, opt$famFile, opt$phenoFile, opt$tmpDirectory)
+  preMunge(opt$inputDirectory, opt$samplesFile, opt$famFile, opt$phenoFile)
   # dat = bind_rows(dat, q1)
 }
 if (opt$mode != 'munge'){
-res = calcGLM(opt$tmpDirectory, predictors)
-write.table(res, opt$outPrefix, quote = F, row.names = F)
+res = calcGLM(opt$inputDirectory, predictors)
+write.table(res, paste(opt$outPrefix, 'admixmap.txt', sep = ""), quote = F, row.names = F)
 }
+
 

@@ -9,7 +9,8 @@ option_list <- list(
   make_option(c("-p", "--plink_prefix"),
               help="Full path of plink prefix"),
   make_option(c("-o", "--output"), help="output_file"),
-  make_option(c("-d", "--num_latent_factors"), help="Number of latent factors to infer, including the intercept"))
+  make_option(c("-d", "--num_latent_factors"), help="Number of latent factors to infer, including the intercept"),
+  make_option(c("-t", "--treshold"), default=1, help="p-value threshold for filtering sites"))
 
 opt <- parse_args(OptionParser(option_list=option_list))
 
@@ -116,7 +117,7 @@ read.bed <- function(bed.prefix){
 }
 
 ######################### Main Body #########################
-
+thresh = as.numeric(opt$t)
 dat = read.bed(opt$p)
 print(dim(dat))
 print(opt$num_latent_factors)
@@ -125,3 +126,7 @@ dat = dat[complete.cases(dat),]
 LF = lfa(dat, as.numeric(opt$num_latent_factors))
 p = sHWE(dat, LF, 1)
 write.table(p, opt$o, quote=F,row.names=F,col.names = F)
+IDs = read.table(paste(opt$p,".bim",sep=""), header = F)
+IDs = IDs[p < thresh, ]
+write.table(IDs, paste(opt$o,".rmv.bim",sep=""), quote=F,row.names=F,col.names = F)
+

@@ -5,6 +5,8 @@ import math
 import subprocess
 import pdb
 import shutil
+import pandas as pd
+import scipy.stats
 
 # Get the date
 from datetime import datetime
@@ -16,12 +18,12 @@ configfile: "workflow/config.yml"
 
 # Parse config.yml file
 QUERY = config['query']
-RFMIX = config['rfmix']
+RFMIX = config['admixMapping']['rfmix']
 PREDICTORS = config['predictors']
-SAMPLES = f"accessory/samples.txt"
+SAMPLES = config['samples']
 
 # Make subdirectories
-dirs = ["input", "accessory", "plink", "BLINK", "OandE", "data", "sHWE", "scripts"]
+dirs = ["input", "accessory", "plink", "plink/DS", "BLINK", "OandE", "data", "sHWE", "scripts"]
 for directory in dirs:
     if not os.path.exists(directory): os.mkdir(directory)
 
@@ -45,15 +47,14 @@ comparisons_per_job = int(config['IBD']['cpj'])
 num_jobs = math.ceil(comparisons / comparisons_per_job)
 
 if config['local_run'] == 'true':
-    localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, blink_GWAS
+    localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, blink_GWAS, extract_optimum_popnum
 else:
-    localrules: all
+    localrules: all, extract_optimum_popnum
 
 def get_all_inputs(wildcards):
-    input_list = [f"{BASE}-rulegraph.png", f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.genome.gz", f"{BASE}.admixmap.txt", f"BLINK/{BASE}_GWAS_result.txt"]
-    input_list += expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs + 1))
-    input_list += expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))
-    print(input_list)
+    input_list = [f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png", f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.genome.gz", f"{BASE}.admixmap.txt", f"BLINK/{BASE}_GWAS_result.txt"]
+    # input_list += expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs + 1))
+    # input_list += expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))
     return(input_list)
 
 def get_cM_inputs(wildcards):
@@ -61,6 +62,7 @@ def get_cM_inputs(wildcards):
     if config['match_controls'] == 'true':
         input_list.append(f"plink/{BASE}.genome.gz")
     return(input_list)
+
 
 rule all:
     input: get_all_inputs
@@ -72,8 +74,9 @@ rule clean:
 rule make_rulegraph:
     output: f"{BASE}-rulegraph.png"
     params: mod_cmd = CMD_PREFIX.replace(f"set +u; {config['singularity']['module']};", "")
-    shell: "snakemake --rulegraph --configfile workflow/config.yml | {params.mod_cmd} dot -Tpng > {output}"
+    shell: f"{config['singularity']['module']}; snakemake --rulegraph --configfile workflow/config.yml | {{params.mod_cmd}} dot -Tpng > {{output}}"
 
+# TODO: provide list of SNPs to keep regardless of filters?
 rule LD_prune: #Not tested...I'm not sure exclude option will work
     input: f"{QUERY}.bed"
     output: f"plink/{BASE}_LDprune_ctrls.bed", f"plink/{BASE}_LDprune.bed"
@@ -83,24 +86,100 @@ rule LD_prune: #Not tested...I'm not sure exclude option will work
         RT = config['LD_pruning']['r2_threshold'],
         awk_string = "\'{if($6==1) print $1,$2}' " + f"plink/{BASE}_LDprune.fam > accessory/control_samples.txt"
     shell:
-        f"{CMD_PREFIX} plink --bfile {QUERY} --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep ; {CMD_PREFIX} plink --bfile {QUERY} --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune; {CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --keep accessory/control_samples.txt --geno 0.0 --make-bed --out plink/{BASE}_LDprune_ctrls"
+        f"{CMD_PREFIX} plink --bfile {QUERY} --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep ; {CMD_PREFIX} plink --bfile {QUERY} --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune; {CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_LDprune_ctrls"
 
-#TODO: add in optional(?) final round of QC.  Assumption is that its a single merged dataset with no need for ref/alt fixing.  sHWE calculations can be performed on just controls
-rule structHWE:
+#TODO: Downsample controls.  The implementation of sHWE currently does not allow ANY missing data.
+# For large control datasets, this requirement will remove many many sites, especially if using imputed data.
+# Tough thing is...will need to create many different random(or fixed?) subsets of individuals in order to minimize stochastic loss of snp data.
+# 1 - Pr[x=0]
+# Pr[notMissing] <= 1 - Pr[missing] = 1 - 0.05 = 0.95
+# Pr[numMiss=0 out of N individuals] = Pr[notMissing]^N
+# If N=50, this equals 0.0769
+# So for random sample of 50 individuals, and 2Million markers, we'd expect ~150k would be testable (i.e. complete genotype data)
+# With 100 individuals, you'd only get ~12k markers per downsample.  If no overlap in markers tested per downsample (best-case scenario), ~167 jobs would be required to test all 2Million SNPs
+# With 50, you'd need 13 jobs.
+# do in python:
+# for f in range(config['sHWE']['downsample_rounds']
+# shuf -n {config['sHWE']['downsample_number']} BASE_LDprune_ctrls.fam > accessory/BASE_LDprune_ctrl_DS
+rule downsample_controls:
     input: f"plink/{BASE}_LDprune_ctrls.bed"
-    output: f"sHWE/{BASE}_sHWE_{{k}}"
-    shell:
-        f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/{BASE}_LDprune_ctrls -d {{wildcards.k}} -o sHWE/{BASE}_sHWE_{{wildcards.k}}"
+    output: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed"
+    run:
+        # for f in range(0,int(config['sHWE']['downsample_rounds'])):
+        #     shell(f"{CMD_PREFIX} shuf -n {config['sHWE']['downsample_number']} plink/{BASE}_LDprune_ctrls.fam > plink/DS/{BASE}_LDprune_ctrls_DS{f}.txt")
+        #     shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_ctrls --keep plink/DS/{BASE}_LDprune_ctrls_DS{f}.txt --keep-allele-order --make-bed --out plink/DS/{BASE}_LDprune_ctrls_DS{f}")
+        shell(f"{CMD_PREFIX} shuf -n {config['sHWE']['downsample_number']} plink/{BASE}_LDprune_ctrls.fam > plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_ctrls --keep plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt --maf 0.1 --geno 0.0 --keep-allele-order --make-bed --out plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}")
 
-rule filter_sHWE_SNPs:
-    input: f"plink/{BASE}_LDprune_ctrls.bed", expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))
-    output: f"plink/{BASE}_LDp_sHWE.bed"
-    params:
-        input_string = ",".join(expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))),
-        threshold = config['sHWE']['threshold'],
-        bins = config['sHWE']['bins']
+rule check_marker_coverage:
+    input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
+    output: "accessory/sHWE_tested_snps.txt"
+    run:
+        shell(f"cat plink/DS/{BASE}_LDprune_ctrls_DS*.bim | sort | uniq > accessory/sHWE_tested_snps.txt")
+
+# TODO; break apart sHWE into two parts.  First, find optimal d value using the first DS dataset; then, run remaining DS datasets using this predetermined d value
+# First run with 100 said that best d value was 7 whereas run with 1000 individuals said best d was 5.  How to know
+rule optimize_sHWE:
+    input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
+    output: f"sHWE/{BASE}_sHWE_{{d}}"
     shell:
-        f"{CMD_PREFIX} Rscript {CODE}/get_sHWE_SNPs.R -p plink/{BASE}_LDprune_ctrls -i {{params.input_string}} -t {{params.threshold}} -b {{params.bins}} -o sHWE/fltd_SNPs.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/fltd_SNPs.txt --make-bed --out plink/{BASE}_LDp_sHWE"
+        f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS0 -d {{wildcards.d}} -o sHWE/{BASE}_sHWE_{{wildcards.d}}"
+
+#TODO: how to get popNum from output of Rscript.  Write to tmp file?
+#TODO: Need to rewrite all of next rule including Rscript
+#TODO: Maybe just use internal python to calc entropy and find optimum popNum.
+#TODO: Will still need an Rscript after structHWE to do the actual filtering.
+rule extract_optimum_popnum:
+    input: expand(f"sHWE/{BASE}_sHWE_{{d}}", d=config['sHWE']['pop_nums'].split(","))
+    output: f"sHWE/.optimum_popnum.txt"
+    params:
+        bins = int(config['sHWE']['bins'])
+        # bins = 30
+    run:
+        max_entropy = -9
+        best_popnum = -9
+        for file in input:
+            popnum = file.split("_")[-1]
+            dat = pd.read_table(file, header=None) # read in vector of p-values from sHWE
+            binned = pd.cut(dat.iloc[:,0], params.bins).value_counts(sort=False) # bin and count vector values
+            entropy = scipy.stats.entropy(binned.iloc[1:,]) # Calculate entropy of bin counts, excluding first bin that corrresponds to bin containing true positives (i.e. sites truly out of HWE)
+            if entropy > max_entropy:
+                best_popnum = popnum
+                max_entropy = entropy
+        assert(max_entropy != -9 and best_popnum != -9)
+        with open("sHWE/.optimum_popnum.txt", 'w') as outfile: outfile.write(str(best_popnum))
+
+
+rule structHWE:
+    input: f"sHWE/.optimum_popnum.txt", expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
+    output: f"sHWE/{BASE}_sHWE-DS{{f}}", f"sHWE/{BASE}_sHWE-DS{{f}}.rmv.bim"
+    params:
+        threshold = config['sHWE']['threshold']
+    run:
+        # Then, run sHWE on remaining downsampled datasets using the optimal k value
+        popfile = open(f"sHWE/.optimum_popnum.txt", 'r')
+        popnum = popfile.readline()
+        popfile.close()
+        # Before doing this, check to see how many of original snps we have tested?
+        ### STOP HERE.  PUT IN CATCH FOR IF TOO FEW SNPS ARE BEING CAPTURED BY DOWNSAMPLED DATA SET
+        # f"zcat plink/DS/{BASE}_LDprune_ctrls_DS{{wildcard.round}}.bim | sort | uniq | diff - plink/{BASE}_LDprune_ctrls"
+        shell(f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.f}} -d {popnum} -t {{params.threshold}} -o sHWE/{BASE}_sHWE-DS{{wildcards.f}}")
+
+# Just do this in python
+# Stopping here.  For every DS sHWE calc, need to put together bim and pvals and determine which SNPs are to be filtered.
+# After doing this for each, need to concatenate list, sort, and find uniq snps to be used as list in subsequent final filter step.
+# Still need to look above at HOW MANY SNPS WILL BE CAPTURED BY OVERLAP.
+# Or if we just complete this, we can run process multiple times till just past this step and compare list that are filtered.
+rule filter_sHWE_SNPs:
+    # input: expand(f"sHWE/{BASE}_sHWE-DS{{round}}", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
+    # output: f"plink/{BASE}_LDp_sHWE.bed"
+    input: expand(f"sHWE/{BASE}_sHWE-DS{{f}}", f = range(0,int(config['sHWE']['downsample_rounds']))), expand(f"sHWE/{BASE}_sHWE-DS{{f}}.rmv.bim", f = range(0,int(config['sHWE']['downsample_rounds'])))
+    output: f"plink/{BASE}_LDp_sHWE.bed"
+    run:
+        shell(f"cat {{input[1]}} | sort | uniq > sHWE/sHWE.rmvd.snps.bim")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/sHWE.rmvd.snps.bim --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE")
+    # shell:
+    #     f"{CMD_PREFIX} Rscript {CODE}/get_sHWE_SNPs.R -p plink/{BASE}_LDprune_ctrls -i {{params.input_string}} -t {{params.threshold}} -o sHWE/fltd_SNPs.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/fltd_SNPs.txt --make-bed --out plink/{BASE}_LDp_sHWE"
 
 rule calcFreq:
     input: f"plink/{BASE}_LDp_sHWE.bed"
@@ -119,12 +198,11 @@ rule catIBS:
     output: f"plink/{BASE}.genome.gz"
     shell: f"{CMD_PREFIX} cat plink/{BASE}.genome.* | gzip > {BASE}.genome.gz; mv {BASE}.genome.gz plink"
 
-#TODO: rule filter_related_individuals_using_IBS_results
 rule IBD_filter:
     input: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}.genome.gz"
     output: f"plink/{BASE}_LDp_sHWE_IBDflt.bed"
     params:
-        awk_string = "\'{{if($10>" + config['IBD']['pi_hat'] + ") print $0}}\' > accessory/related_IBS_results.txt"
+        awk_string = "\'{if($10>" + config['IBD']['pi_hat'] + ") print $0}\' > accessory/related_IBS_results.txt"
     shell:
         f"zcat {{input[1]}} | awk {{params.awk_string}}; {CMD_PREFIX} Rscript scripts/filter_relateds.R -r accessory/related_IBS_results.txt -o accessory/excluded_related_samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --remove accessory/excluded_related_samples.txt --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt"
 
@@ -135,8 +213,10 @@ rule controlMatch:
     run:
         if config['match_controls'] == 'true':
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; {CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep accessory/samples.txt --make-bed --out input/{BASE}_MapRdy")
-        else:
-            shell(f"{CMD_PREFIX} awk \'{{print $2}}\' input/{BASE}_LDp_sHWE_IBDflt.fam > accessory/samples.txt; {CMD_PREFIX} plink --bfile input/{BASE}_LDp_sHWE_IBDflt --make-bed --out input/{BASE}_MapRdy")
+            shell("awk \'{{print $2}}\' accessory/samples.txt > accessory/samples2.txt")
+            SAMPLES = "accessory/samples2.txt"
+        elif config['samples'] == "all":
+            shell(f"{CMD_PREFIX} awk \'{{print $2}}\' input/{BASE}_LDp_sHWE_IBDflt.fam > accessory/samples2.txt; {CMD_PREFIX} plink --bfile input/{BASE}_LDp_sHWE_IBDflt --make-bed --out input/{BASE}_MapRdy")
             SAMPLES = 'all'
 
 rule calcPCA:
@@ -146,12 +226,17 @@ rule calcPCA:
         f"{CMD_PREFIX} plink --bfile input/{BASE}_MapRdy --pca --out plink/{BASE}"
 
 rule admixMap:
-    input: "accessory/samples.txt"
+    input: "accessory/samples2.txt"
     output: f"{BASE}.admixmap.txt"
     threads: int(config['admixMapping']['cores'])
-    shell: # CMD below is not done
-        f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s {SAMPLES} -f input/{BASE}_MapRdy.fam -o {BASE}.admixmap.txt -P {PREDICTORS} -c {{threads}} -t data/"
+    run: # CMD below is not done
+        if config['admixMapping']['premunged'] == 'true':
+            shell(f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s {SAMPLES} -f input/{BASE}_MapRdy.fam -o {BASE} -P {PREDICTORS} -c {{threads}} -m stats")
+        else:
+            shell(f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s {SAMPLES} -f input/{BASE}_MapRdy.fam -o {BASE} -P {PREDICTORS} -c {{threads}}")
 
+# TODO: Pause to think.  Testing set should not necessarily be the set used to generate PCA, IBD filtering, and control matching.
+# After finding matched controls, should we return to the original dataset and re-filter with lower LD settings etc?
 rule blink_convert:
     input: f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.eigenvec"
     output: f"BLINK/{BASE}.pos"
@@ -159,7 +244,8 @@ rule blink_convert:
         pc_cols=int(config['gwas']['pc_num']) + 1
     run:
         with open('blink_convert.sh', 'w') as temp_sh:
-            temp_sh.write(f"cp -r {config['gwas']['blink_dir']} .; cp input/{BASE}* BLINK; cut -f -{{params.pc_cols}} {{input[1]}} > BLINK/{BASE}.cov; cd BLINK; ./blink_linux --file {BASE} --compress --plink")
+            cmd = f"cp -r {config['gwas']['blink_dir']} .; cp input/{BASE}* BLINK; cut -f -{{params.pc_cols}} {{input[1]}} > BLINK/{BASE}.cov; cd BLINK; ./blink_linux --file {BASE} --compress --plink"
+            temp_sh.write(cmd)
         shell(f"{CMD_PREFIX} sh blink_convert.sh")
         #shell(f"; {CMD_PREFIX} ".join([f"{CMD_PREFIX} cp -r {config['gwas']['blink_dir']} .", "cp input/{BASE}* BLINK", f"cut -f -{{params.pc_cols}} {{input[1]}} > BLINK/{BASE}.cov", "cd BLINK", f"./blink_linux --file {BASE} --compress --plink", ]))
 
