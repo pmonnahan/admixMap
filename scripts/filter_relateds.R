@@ -10,7 +10,7 @@ option_list <- list(
 
 opt <- parse_args(OptionParser(option_list=option_list))
 
-rel = read.table(opt$relateds, header = T)
+rel = read.table(opt$relateds, header = T, comment.char = "")
 
 rel %<>% mutate(ID1=paste(FID1,IID1,sep="]"), ID2=paste(FID2,IID2,sep="]"))
 multi_rel = rel %>% select(ID1,ID2) %>% pivot_longer(c(ID1,ID2)) %>% count(value) %>% filter(n>1)

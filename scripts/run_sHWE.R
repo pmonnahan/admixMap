@@ -124,9 +124,20 @@ print(opt$num_latent_factors)
 print(opt$o)
 dat = dat[complete.cases(dat),]
 LF = lfa(dat, as.numeric(opt$num_latent_factors))
-p = sHWE(dat, LF, 1)
+
+p = tryCatch({
+  sHWE(dat, LF, 1)
+}, error = function(e) {
+  return(NULL)
+})
+
 write.table(p, opt$o, quote=F,row.names=F,col.names = F)
-IDs = read.table(paste(opt$p,".bim",sep=""), header = F)
-IDs = IDs[p < thresh, ]
-write.table(IDs, paste(opt$o,".rmv.bim",sep=""), quote=F,row.names=F,col.names = F)
+
+if (is.null(p)){
+  write.table(NULL, paste(opt$o,".rmv.bim",sep=""), quote=F,row.names=F,col.names = F)
+} else {
+  IDs = read.table(paste(opt$p,".bim",sep=""), header = F)
+  IDs = IDs[p < thresh, ]
+  write.table(IDs, paste(opt$o,".rmv.bim",sep=""), quote=F,row.names=F,col.names = F)
+}
 
