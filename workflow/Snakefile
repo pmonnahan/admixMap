@@ -27,7 +27,7 @@ for directory in dirs:
     if not os.path.exists(directory): os.mkdir(directory)
 
 if config['singularity']['use_singularity'] == 'true' and config['singularity']['image'] != "none":
-    bind_paths = ",".join(set([os.path.dirname(x) for x in [QUERY]] + dirs + [RFMIX]))
+    bind_paths = ",".join(set([os.path.dirname(x) for x in [QUERY, config['samples']]] + dirs + [RFMIX]))
     CMD_PREFIX = f"set +u; {config['singularity']['module']}; singularity exec --bind {bind_paths} {config['singularity']['image']}"
     CODE = config['singularity']['code']
 else:
@@ -210,7 +210,7 @@ rule IBD_filter:
 rule controlMatch:
     # TODO: add option for user to provide samples file
     input: get_cM_inputs
-    output: f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed"
+    output: f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed", f"input/{BASE}_PCA.bed"
     run:
         if config['match_controls'] == 'true':
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; "
