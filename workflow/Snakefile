@@ -21,11 +21,6 @@ QUERY = config['query']
 RFMIX = config['admixMapping']['rfmix']
 PREDICTORS = config['predictors']
 
-if config['match_controls'] == 'true':
-    SAMPLES = "accessory/samples.txt"
-else:
-    SAMPLES = config['samples']
-
 # Make subdirectories
 dirs = ["input", "accessory", "plink", "plink/DS", "BLINK", "OandE", "data", "sHWE", "scripts"]
 for directory in dirs:
@@ -80,9 +75,20 @@ rule make_rulegraph:
     params: mod_cmd = CMD_PREFIX.replace(f"set +u; {config['singularity']['module']};", "")
     shell: f"{config['singularity']['module']}; snakemake --rulegraph --configfile workflow/config.yml | {{params.mod_cmd}} dot -Tpng > {{output}}"
 
+rule subset_individuals:
+    input: f"{QUERY}.bed"
+    output: f"plink/{BASE}_sub.bed"
+    run:
+        if config['samples'] == 'all':
+            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep-allele-order --make-bed --out plink/{BASE}_sub")
+        elif os.path.exists(config['samples']):
+            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep {config['samples']} --keep-allele-order --make-bed --out plink/{BASE}_sub")
+        else:
+            print("If 'sample' is not set to 'all' in the config.yml file, then user must specify a valid (PLINK-format; FID IID) text file for subsetting individuals")
+
 # TODO: provide list of SNPs to keep regardless of filters?
 rule LD_prune: #Not tested...I'm not sure exclude option will work
-    input: f"{QUERY}.bed"
+    input: f"plink/{BASE}_sub.bed"
     output: f"plink/{BASE}_LDprune_ctrls.bed", f"plink/{BASE}_LDprune.bed"
     params:
         WS = config['LD_pruning']['window_size'],
@@ -90,9 +96,11 @@ rule LD_prune: #Not tested...I'm not sure exclude option will work
         RT = config['LD_pruning']['r2_threshold'],
         awk_string = "\'{if($6==1) print $1,$2}' " + f"plink/{BASE}_LDprune.fam > accessory/control_samples.txt"
     shell:
-        f"{CMD_PREFIX} plink --bfile {QUERY} --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep ; {CMD_PREFIX} plink --bfile {QUERY} --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune; {CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_LDprune_ctrls"
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep ; "
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune; "
+        f"{CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_LDprune_ctrls"
 
-#TODO: Downsample controls.  The implementation of sHWE currently does not allow ANY missing data.
+# Downsample controls.  The implementation of sHWE currently does not allow ANY missing data.
 # For large control datasets, this requirement will remove many many sites, especially if using imputed data.
 # Tough thing is...will need to create many different random(or fixed?) subsets of individuals in order to minimize stochastic loss of snp data.
 # 1 - Pr[x=0]
@@ -162,9 +170,6 @@ rule structHWE:
         # f"zcat plink/DS/{BASE}_LDprune_ctrls_DS{{wildcard.round}}.bim | sort | uniq | diff - plink/{BASE}_LDprune_ctrls"
         shell(f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.f}} -d {popnum} -t {{params.threshold}} -o sHWE/{BASE}_sHWE-DS{{wildcards.f}}")
 
-# Just do this in python
-# Stopping here.  For every DS sHWE calc, need to put together bim and pvals and determine which SNPs are to be filtered.
-# After doing this for each, need to concatenate list, sort, and find uniq snps to be used as list in subsequent final filter step.
 # Still need to look above at HOW MANY SNPS WILL BE CAPTURED BY OVERLAP.
 # Or if we just complete this, we can run process multiple times till just past this step and compare list that are filtered.
 rule filter_sHWE_SNPs:
@@ -176,10 +181,7 @@ rule filter_sHWE_SNPs:
     shell:
             f"cat {{input[1]}} | sort | uniq > sHWE/sHWE.rmvd.snps.bim; "
             f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/sHWE.rmvd.snps.bim --keep-allele-order --make-bed --maf {{params.maf}} --out plink/{BASE}_LDp_sHWE"
-    # shell:
-    #     f"{CMD_PREFIX} Rscript {CODE}/get_sHWE_SNPs.R -p plink/{BASE}_LDprune_ctrls -i {{params.input_string}} -t {{params.threshold}} -o sHWE/fltd_SNPs.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/fltd_SNPs.txt --make-bed --out plink/{BASE}_LDp_sHWE"
 
-# Should bfile be filtered at previous step? maybe...
 rule calcFreq:
     input: f"plink/{BASE}_LDp_sHWE.bed"
     output: f"plink/{BASE}.frq"
@@ -213,16 +215,19 @@ rule controlMatch:
         if config['match_controls'] == 'true':
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; "
                   f"{CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples2.txt; "
-                  "awk '{{print $2}}' accessory/samples2.txt > accessory/samples.txt; "
-                  f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep accessory/samples2.txt --make-bed --out input/{BASE}_MapRdy")
-        elif config['samples'] == "all":
-            shell(f"{CMD_PREFIX} awk \'{{print $2}}\' input/{BASE}_LDp_sHWE_IBDflt.fam > accessory/samples.txt; {CMD_PREFIX} plink --bfile input/{BASE}_LDp_sHWE_IBDflt --make-bed --out input/{BASE}_MapRdy")
+                  "awk '{{print $2}}' accessory/samples2.txt > accessory/samples.txt")
+            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep {sample_file} --make-bed --out input/{BASE}_MapRdy; "
+                  f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep {sample_file} --make-bed --out input/{BASE}_PCA")
+        else:
+            shell("{CMD_PREFIX} awk '{{print $2}}' input/" + BASE + "_LDp_sHWE_IBDflt.fam > accessory/samples.txt")
+            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --make-bed --out input/{BASE}_MapRdy; "
+                  f"{CMD_PREFIX} plink --bfile input/{BASE}_LDp_sHWE_IBDflt --make-bed --out input/{BASE}_PCA")
 
 rule calcPCA:
-    input: f"input/{BASE}_MapRdy.bed"
+    input: f"input/{BASE}_PCA.bed"
     output: f"plink/{BASE}.eigenvec"
     shell:
-        f"{CMD_PREFIX} plink --bfile input/{BASE}_MapRdy --pca --out plink/{BASE}"
+        f"{CMD_PREFIX} plink --bfile input/{BASE}_PCA --pca --out plink/{BASE}"
 
 rule admixMap:
     input: "accessory/samples.txt"
@@ -230,9 +235,9 @@ rule admixMap:
     threads: int(config['admixMapping']['cores'])
     run: # CMD below is not done
         if config['admixMapping']['premunged'] == 'true':
-            shell(f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s {SAMPLES} -f input/{BASE}_MapRdy.fam -o {BASE} -P {PREDICTORS} -c {{threads}} -m stats")
+            shell(f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s accessory/samples.txt -f input/{BASE}_MapRdy.fam -o {BASE} -P {PREDICTORS} -c {{threads}} -m stats")
         else:
-            shell(f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s {SAMPLES} -f input/{BASE}_MapRdy.fam -o {BASE} -P {PREDICTORS} -c {{threads}}")
+            shell(f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s accessory/samples.txt -f input/{BASE}_MapRdy.fam -o {BASE} -P {PREDICTORS} -c {{threads}}")
 
 # TODO: Pause to think.  Testing set should not necessarily be the set used to generate PCA, IBD filtering, and control matching.
 # After finding matched controls, should we return to the original dataset and re-filter with lower LD settings etc?
