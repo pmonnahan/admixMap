@@ -51,7 +51,7 @@ else:
     localrules: all, extract_optimum_popnum
 
 def get_all_inputs(wildcards):
-    input_list = ["accessory/sHWE_tested_snps.txt", f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png", f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.genome.gz", f"{BASE}.admixmap.txt", f"BLINK/{BASE}_GWAS_result.txt"]
+    input_list = ["accessory/sHWE_tested_snps.txt", f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png", f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec", f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.genome.gz", f"{BASE}.admixmap.txt", f"{BASE}.assocmap.txt"]
     # input_list += expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs + 1))
     # input_list += expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))
     return(input_list)
@@ -216,8 +216,8 @@ rule controlMatch:
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; "
                   f"{CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples2.txt; "
                   "awk '{{print $2}}' accessory/samples2.txt > accessory/samples.txt")
-            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep {sample_file} --make-bed --out input/{BASE}_MapRdy; "
-                  f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep {sample_file} --make-bed --out input/{BASE}_PCA")
+            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep accessory/samples2.txt --make-bed --out input/{BASE}_MapRdy; "
+                  f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep accessory/samples2.txt --make-bed --out input/{BASE}_PCA")
         else:
             shell("{CMD_PREFIX} awk '{{print $2}}' input/" + BASE + "_LDp_sHWE_IBDflt.fam > accessory/samples.txt")
             shell(f"{CMD_PREFIX} plink --bfile {QUERY} --make-bed --out input/{BASE}_MapRdy; "
@@ -239,28 +239,25 @@ rule admixMap:
         else:
             shell(f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s accessory/samples.txt -f input/{BASE}_MapRdy.fam -o {BASE} -P {PREDICTORS} -c {{threads}}")
 
-# TODO: Pause to think.  Testing set should not necessarily be the set used to generate PCA, IBD filtering, and control matching.
-# After finding matched controls, should we return to the original dataset and re-filter with lower LD settings etc?
+
 rule blink_convert:
     input: f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.eigenvec"
     output: f"BLINK/{BASE}_MapRdy.pos"
-    params:
-        pc_cols=int(config['gwas']['pc_num']) + 1,
     run:
-        with open('blink_convert.sh', 'w') as temp_sh:
+        with open('scripts/blink_convert.sh', 'w') as temp_sh:
             cmd = f"rm -r -f BLINK/*; chmod -R 775 BLINK/; cp -r {config['gwas']['blink_dir']}/* BLINK; " \
-                  f"cp input/{BASE}* BLINK; cut -f -{params.pc_cols} {input[1]} > BLINK/{BASE}.cov; " \
-                  f"cd BLINK; chmod 770 *; ./blink_linux --file {BASE}_MapRdy --compress --plink; " \
-                  f"echo 'taxa\tphenotype\n' > {BASE}_MapRdy.txt; " \
-                  f"awk '{{print $2, $6}}' ../input/{BASE}_MapRdy.fam >> {BASE}_MapRdy.txt"
+                  f"cp input/{BASE}* BLINK; cd BLINK; chmod 770 *; ./blink_linux --file {BASE}_MapRdy --compress --plink; cd .. ; " \
+                  f"Rscript {CODE}/blink_prep.R -f input/{BASE}_MapRdy.fam -d plink/{BASE}.eigenvec -n {config['gwas']['pc_num']} -o BLINK/{BASE}_MapRdy "
+            if os.path.exists(config['covariate_file']): #Not tested
+                cmd += f"-c {config['covariate_file']}"
             temp_sh.write(cmd)
-        shell(f"{CMD_PREFIX} sh blink_convert.sh")
-        #shell(f"; {CMD_PREFIX} ".join([f"{CMD_PREFIX} cp -r {config['gwas']['blink_dir']} .", "cp input/{BASE}* BLINK", f"cut -f -{{params.pc_cols}} {{input[1]}} > BLINK/{BASE}.cov", "cd BLINK", f"./blink_linux --file {BASE} --compress --plink", ]))
+        shell(f"{CMD_PREFIX} sh scripts/blink_convert.sh")
 
 rule blink_GWAS:
     input: f"BLINK/{BASE}_MapRdy.pos"
-    output: f"BLINK/{BASE}_GWAS_result.txt"
+    output: f"{BASE}.assocmap.txt"
+    threads: int(config['gwas']['cores'])
     run:
-        with open('blink_gwas.sh', 'w') as temp_sh:
-            temp_sh.write(f"cd BLINK; ./blink_linux --file {BASE}_MapRdy --binary --gwas --out {BASE}_GWAS_result.txt")
-        shell(f"{CMD_PREFIX} sh blink_gwas.sh")
+        with open('scripts/blink_gwas.sh', 'w') as temp_sh:
+            temp_sh.write(f"cd BLINK; ./blink_linux --file {BASE}_MapRdy --binary --gwas --parallel 1 --cycle-size {threads}; cp phenotype_GWAS_result.txt ../{BASE}.assocmap.txt")
+        shell(f"{CMD_PREFIX} sh scripts/blink_gwas.sh")

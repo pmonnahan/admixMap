@@ -18,6 +18,7 @@ IBD:
   ibd1: '0.2'
 match_controls: 'true'
 predictors: 'sex,AFR,AFR.glob'
+covariate_file: 'none' # Tab-delimited file with header line specifying names of covariates.  First column MUST be labeled with 'taxa' and should contain sample IDs EXACTLY as they are specified in input plink files.
 singularity:
   use_singularity: 'true'
   image: 'DIRECTORY_CONTAINING/AncestryInference.sif' # MODIFY
