@@ -1,37 +1,38 @@
 #Modify all lines indicated with MODIFY
 outname: "AncInf" # MODIFY: prefix used for naming output
 query: "PATH_TO_PLINK_PREFIX" #MODIFY: Prefix for PLINK files containing all of the query samples for ancestry inference
+admixMapping:
+  rfmix: "OUTPUT_DIRECTORY_OF RFMIX"
+  cores: '12'
+  premunged: "false"
 LD_pruning:
   window_size: "50"
   step_size: "5"
   r2_threshold: "0.3"
 sHWE:
-  pop_nums: '2,4,6,8,10,12,14' # From these choices, the pipeline will try to find the optimal number of populations to use in latent factor analysis used in the structured HWE procedure
-  threshold: '0.00001' # p-value threshold for filtering based on departure from sHWE
+  pop_nums: '1,2,3,4,5,6,7,8' # From these choices, the pipeline will try to find the optimal number of populations to use in latent factor analysis used in the structured HWE procedure
+  threshold: '0.000001' # p-value threshold for filtering based on departure from sHWE
   bins: '30'
-  downsample_rounds: '200'
-  downsample_number: '100'
+  downsample_rounds: '2000'
+  downsample_number: '1000'
   maf: '0.05'
 IBD:
-  cpj: '10000' # number of comparisons per job for IBS calculation
+  cpj: '100000' # number of comparisons per job for IBS calculation
   pi_hat: '0.125'
   ibd1: '0.2'
+kinship_threshold: '0.125'
 match_controls: 'true'
 predictors: 'sex,AFR,AFR.glob'
 covariate_file: 'none' # Tab-delimited file with header line specifying names of covariates.  First column MUST be labeled with 'taxa' and should contain sample IDs EXACTLY as they are specified in input plink files.
 singularity:
   use_singularity: 'true'
-  image: 'DIRECTORY_CONTAINING/AncestryInference.sif' # MODIFY
+  image: '/home/pmonnaha/pmonnaha/singularity/AncestryInference.sif' # MODIFY
   code: '/scripts/'
   module: 'module load singularity'
 samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
-admixMapping:
-  rfmix: "OUTPUT_DIRECTORY_OF RFMIX"
-  cores: '12'
-  premunged: "true"
 cmd_prefix: "module load plink/1.90b6.10; module load htslib/1.6; module load bcftools/1.9;"
 gwas:
-  pc_num: '4'
+  pc_num: '4' #Currently unused
   blink_dir: "/usr/local/bin/BLINK"
-  cores: '8'
+  cores: '12'
 local_run: 'false'

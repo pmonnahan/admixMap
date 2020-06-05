@@ -23,11 +23,19 @@ structHWE:
   mem: '32gb'
 
 admixMap:
-  walltime: '12:00:00'
+  walltime: '24:00:00'
   mem: '32gb'
+
+blink_convert:
+  walltime: '12:00:00'
+  mem: '16gb'
 
 blink_GWAS:
   walltime: '12:00:00'
-  mem: '32gb'
+  mem: '64gb'
+
+genesis_GWAS:
+  walltime: '48:00:00'
+  mem: '64gb'
 
 

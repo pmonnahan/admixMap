@@ -43,10 +43,11 @@ pca = read.table(opt$PCAfile, comment.char="")
 
 pca_num = as.numeric(opt$PCAnumber) + 2
 
-pca %<>% select(2:all_of(pca_num)) %>% mutate(taxa=V2) %>% select(-V2)
+pca %<>% select(2:all_of(pca_num)) %>% mutate(taxa=str_replace(V2,"#","")) %>% select(-V2)
 
 if (opt$c != "none"){
   cov = read.table(opt$covariates, comment.char="")
+  cov %<>% mutate(taxa=str_replace(V2,"#",""))
   fam %<>% select(taxa,sex) %>% left_join(cov, by = "taxa") %>% left_join(pca, by = "taxa")
   fam %>% write.table(paste0(opt$outPrefix, ".cov"), row.names = F, quote = F)
   
