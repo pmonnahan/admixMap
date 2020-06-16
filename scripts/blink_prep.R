@@ -25,7 +25,7 @@ option_list <- list(
   make_option(c("-o", "--outPrefix"), default="BLINK/", 
               help = "output prefix"),
   make_option(c("-d", "--PCAfile"), 
-              help=".eigenvec file from plink"),
+              help=".pcrelate.txt from genesis_gwas.R script"),
   make_option(c("-n", "--PCAnumber"), default = 4,
               help="number of PCs you wish to retain")
 )
@@ -41,9 +41,11 @@ fam %>% select(taxa, phenotype) %>% write.table(paste0(opt$outPrefix, ".txt"), r
 
 pca = read.table(opt$PCAfile, comment.char="")
 
-pca_num = as.numeric(opt$PCAnumber) + 2
+# pca_num = as.numeric(opt$PCAnumber) + 2
+# 
+# pca %<>% select(2:all_of(pca_num)) %>% mutate(taxa=str_replace(V2,"#","")) %>% select(-V2)
 
-pca %<>% select(2:all_of(pca_num)) %>% mutate(taxa=str_replace(V2,"#","")) %>% select(-V2)
+pca %<>% mutate(taxa=str_replace(scanID,"#","")) %>% select(-scanID)
 
 if (opt$c != "none"){
   cov = read.table(opt$covariates, comment.char="")

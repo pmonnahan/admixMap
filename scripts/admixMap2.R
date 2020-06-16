@@ -7,6 +7,7 @@ suppressPackageStartupMessages(library(dplyr))
 suppressPackageStartupMessages(library(tidyverse))
 suppressPackageStartupMessages(library(testit))
 suppressPackageStartupMessages(library(doParallel))
+suppressPackageStartupMessages(library(foreach))
 suppressPackageStartupMessages(library(lme4))
 suppressPackageStartupMessages(library(optparse))
 suppressPackageStartupMessages(library(broom))
@@ -39,6 +40,7 @@ option_list <- list(
 opt <- parse_args(OptionParser(option_list=option_list))
 registerDoParallel(cores = as.numeric(opt$cores))
 predictors = strsplit(opt$Predictors, ",")[[1]]
+
 ######################### END: Read in arguments #########################
 
 ######################### Define functions #########################
@@ -54,11 +56,12 @@ for (i in 1:length(files)){
   nrow(dat)
   DF = rbind(DF, dat)
 }
+DF %<>% mutate(samp = str_replace(V1, "#", "")) %>% select(-V1)
 if (samples != "all"){
-  samples = read.table(samples)
-  DF %<>% filter(V1 %in% samples$V1)
+  samples = read.table(samples, comment.char = "")
+  DF %<>% filter(samp %in% samples$V1)
 }
-DF %<>% pivot_longer(-V1, names_to="pop", values_to="ancestry") %>% group_by(V1, pop) %>% summarize(ancestry = mean(ancestry)) %>% spread(pop,ancestry)
+DF %<>% pivot_longer(-samp, names_to="pop", values_to="ancestry") %>% group_by(samp, pop) %>% summarize(ancestry = mean(ancestry)) %>% spread(pop,ancestry)
 colnames( DF ) <- unlist(header)
 return(DF)
 }
@@ -70,7 +73,7 @@ readMSP = function(filename, cases=NA, filter_case = FALSE, label_case = TRUE){
   q1 = read.table(filename, header=F, comment.char = "", skip = 2)
   colnames( q1 ) <- unlist(q1h)
   q1 %<>% pivot_longer(-c(`#chm`,spos,epos,sgpos,egpos,snps), names_to="sample", values_to="anc")
-  q1 %<>% separate(sample, c("sample","hap"),"[.]") %>% mutate(chm = `#chm`) %>% select(-`#chm`)
+  q1 %<>% separate(sample, c("tmp.sample","hap"),"[.]") %>% mutate(chm = `#chm`, sample = str_replace(tmp.sample, "#", "")) %>% select(-c(`#chm`, tmp.sample))
   q1 %<>% group_by(chm,spos,epos,sgpos,egpos,snps, sample) %>% count(anc) %>% ungroup() %>% mutate(anc = as.character(anc)) %>% left_join(q1p, by = "anc") %>% select(-c(anc,name)) %>% pivot_wider(id_cols = c(chm,spos,epos,sgpos, egpos,snps,sample), names_from=Pop, values_from=n, values_fill = list(n=0))
 
   return(q1)
@@ -81,7 +84,7 @@ preMunge = function(fileDir, samples, fam_pheno, other_pheno){
   pdat = read.table(fam_pheno, comment.char = "")
   pdat %<>% mutate(sample = V2, sex = V5, pheno = V6 - 1) %>% filter(pheno >= 0) %>% left_join(Q, by="sample")
   if (other_pheno != "none"){
-    odat = read.table(other_pheno, head = T)
+    odat = read.table(other_pheno, comment.char="", head = T)
     pdat %<>% left_join(odat, by="sample")
   }
   
@@ -136,7 +139,7 @@ if (opt$mode != 'stats'){
 }
 if (opt$mode != 'munge'){
 res = calcGLM(opt$inputDirectory, predictors)
-write.table(res, paste(opt$outPrefix, 'admixmap.txt', sep = ""), quote = F, row.names = F)
+write.table(res, paste(opt$outPrefix, '.admixmap.txt', sep = ""), quote = F, row.names = F)
 }
 
 

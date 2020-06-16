@@ -37,13 +37,29 @@ else:
 BASE = config['outname']  # Base prefix used for naming files is set as basename of
 INPUT = f"input/{BASE}"
 
-# Determine number of individuals from .fam file
-ind_num = 0
-with open(f"{QUERY}.fam", 'r') as fam_file:
-    for ind in fam_file: ind_num += 1
+samps = []
+with open (f"{QUERY}.fam") as fam_file:
+        for line in fam_file:
+            line = line.strip().split()
+            samps.append(line[1].replace("#", ""))
+
+#Retrieve control individuals; Determine number of controls from .fam file
+if config['samples'] == 'all':
+    ind_num = len(samps)
+elif os.path.exists(config['samples']):
+    ind_num = 0
+    with open(config['samples'], 'r') as samp_file:
+        for ind in samp_file:
+            if ind.strip().split()[1] in samps: ind_num += 1
+else:
+    print("'samples' must be set to 'all' or a valid path in config file")
+
 comparisons = ind_num * (ind_num - 1) / 2
 comparisons_per_job = int(config['IBD']['cpj'])
 num_jobs = math.ceil(comparisons / comparisons_per_job)
+if num_jobs <= 1: # Attempt to catch an error that arises in instances where there are not that many jobs to run
+    comparisons_per_job = comparisons_per_job / 100
+    num_jobs = math.ceil(comparisons / comparisons_per_job)
 
 if config['local_run'] == 'true':
     localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, blink_GWAS, extract_optimum_popnum
@@ -71,7 +87,7 @@ rule all:
 
 rule clean:
     shell:
-        "rm input/*; rm plink/*; rm BLINK/*; rm data/*"
+        "rm input/*; rm -r plink/*; rm BLINK/*; rm data/*"
 
 rule make_rulegraph:
     output: f"{BASE}-rulegraph.png"
@@ -86,7 +102,7 @@ rule subset_individuals:
             shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep-allele-order --make-bed --out plink/{BASE}_sub; "
                   f"sed -i 's/#//g' plink/{BASE}_sub.fam")  #Pound sign causes issues with R in subsequent steps
         elif os.path.exists(config['samples']):
-            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep {config['samples']} --keep-allele-order --make-bed --out plink/{BASE}_sub;"
+            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep {config['samples']} --keep-allele-order --allow-no-sex --make-bed --out plink/{BASE}_sub;"
                   f"sed -i 's/#//g' plink/{BASE}_sub.fam")
         else:
             print("If 'sample' is not set to 'all' in the config.yml file, then user must specify a valid (PLINK-format; FID IID) text file for subsetting individuals")
@@ -105,6 +121,32 @@ rule LD_prune: #Not tested...I'm not sure exclude option will work
         f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune; "
         f"{CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_LDprune_ctrls"
 
+rule calcFreq:
+    input: f"plink/{BASE}_LDprune.bed"
+    output: f"plink/{BASE}_LDprune.frq"
+    shell:
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --freq --out plink/{BASE}_LDprune"
+
+rule calcIBS:
+    input: f"plink/{BASE}_LDprune.bed", f"plink/{BASE}_LDprune.frq"
+    output: f"plink/{BASE}.genome.{{job}}"
+    shell:
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --read-freq plink/{BASE}_LDprune.frq --genome --parallel {{wildcards.job}} {num_jobs} --out plink/{BASE}"
+
+rule catIBS:
+    input: expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs +1))
+    output: f"plink/{BASE}.genome.gz"
+    run:
+        shell(f"{CMD_PREFIX} cat plink/{BASE}.genome.* | gzip > {BASE}.genome.gz; mv {BASE}.genome.gz plink")
+
+rule IBD_filter_ctrls:
+    input: f"plink/{BASE}_LDprune_ctrls.bed", f"plink/{BASE}.genome.gz"
+    output: f"plink/{BASE}_LDp_ctrls_IBDflt.bed"
+    params:
+        awk_string = "\'{if($10>" + config['IBD']['pi_hat'] + ") print $0}\' > accessory/related_IBS_ctrls.txt"
+    run:
+        shell(f"zcat {{input[1]}} | awk {{params.awk_string}}; {CMD_PREFIX} Rscript scripts/filter_relateds.R -r accessory/related_IBS_ctrls.txt -o accessory/excluded_related_ctrls.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_ctrls --remove accessory/excluded_related_ctrls.txt --keep-allele-order --make-bed --out plink/{BASE}_LDp_ctrls_IBDflt")
+
 # Downsample controls.  The implementation of sHWE currently does not allow ANY missing data.
 # For large control datasets, this requirement will remove many many sites, especially if using imputed data.
 # Tough thing is...will need to create many different random(or fixed?) subsets of individuals in order to minimize stochastic loss of snp data.
@@ -116,21 +158,29 @@ rule LD_prune: #Not tested...I'm not sure exclude option will work
 # With 100 individuals, you'd only get ~12k markers per downsample.  If no overlap in markers tested per downsample (best-case scenario), ~167 jobs would be required to test all 2Million SNPs
 # With 50, you'd need 13 jobs.
 rule downsample_controls:
-    input: f"plink/{BASE}_LDprune_ctrls.bed"
+    input: f"plink/{BASE}_LDp_ctrls_IBDflt.bed"
     output: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed"
     run:
-        shell(f"{CMD_PREFIX} shuf -n {config['sHWE']['downsample_number']} plink/{BASE}_LDprune_ctrls.fam > plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt")
-        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_ctrls --keep plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt --maf {config['sHWE']['maf']} --geno 0.0 --keep-allele-order --make-bed --out plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}")
+        shell(f"{CMD_PREFIX} shuf -n {config['sHWE']['downsample_number']} plink/{BASE}_LDp_ctrls_IBDflt.fam > plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_ctrls_IBDflt --keep plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt --maf {config['sHWE']['maf']} --geno 0.0 --keep-allele-order --make-bed --out plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}")
 
+#TODO finish check_marker_coverage
 rule check_marker_coverage:
     input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
-    output: "accessory/sHWE_tested_snps.txt"
+    output: "accessory/sHWE_tested_snps.txt", "accessory/.sHWE_pass.txt"
     run:
         shell(f"cat plink/DS/{BASE}_LDprune_ctrls_DS*.bim | sort | uniq > accessory/sHWE_tested_snps.txt")
+        with open('accessory/sHWE_tested_snps.txt', 'r') as tested:
+            num_tested = 0
+            for line in tested: num_tested += 1
+        if num_tested < int(config['sHWE']['test_threshold']):
+            print(f"Fewer than {config['sHWE']['test_threshold']} SNPs tested for sHWE; in config.yml consider either reducing 'downsample_number' or increasing 'downsample_rounds' or both")
+        else:
+            shell('touch accessory/.sHWE_pass.txt')
 
 # First run with 100 said that best d value was 7 whereas run with 1000 individuals said best d was 5.  How to know
 rule optimize_sHWE:
-    input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
+    input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))]), "accessory/.sHWE_pass.txt"
     output: f"sHWE/{BASE}_sHWE_{{d}}"
     shell:
         f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS0 -d {{wildcards.d}} -o sHWE/{BASE}_sHWE_{{wildcards.d}}"
@@ -175,36 +225,23 @@ rule structHWE:
 # Or if we just complete this, we can run process multiple times till just past this step and compare list that are filtered.
 rule filter_sHWE_SNPs:
     input: expand(f"sHWE/{BASE}_sHWE-DS{{f}}", f = range(0,int(config['sHWE']['downsample_rounds']))), expand(f"sHWE/{BASE}_sHWE-DS{{f}}.rmv.bim", f = range(0,int(config['sHWE']['downsample_rounds'])))
-    output: f"plink/{BASE}_LDp_sHWE.bed"
+    output: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}_LDp_sHWE.bim"
     params: maf = config['sHWE']['maf']
     shell:
             f"cat {{input[1]}} | sort | uniq > sHWE/sHWE.rmvd.snps.bim; "
             f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/sHWE.rmvd.snps.bim --keep-allele-order --make-bed --maf {{params.maf}} --out plink/{BASE}_LDp_sHWE"
 
-rule calcFreq:
-    input: f"plink/{BASE}_LDp_sHWE.bed"
-    output: f"plink/{BASE}.frq"
-    shell:
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --freq --out plink/{BASE}"
-
-rule calcIBS:
-    input: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}.frq"
-    output: f"plink/{BASE}.genome.{{job}}"
-    shell:
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --read-freq plink/{BASE}.frq --genome --parallel {{wildcards.job}} {num_jobs} --out plink/{BASE}"
-
-rule catIBS:
-    input: expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs +1))
-    output: f"plink/{BASE}.genome.gz"
-    shell: f"{CMD_PREFIX} cat plink/{BASE}.genome.* | gzip > {BASE}.genome.gz; mv {BASE}.genome.gz plink"
 
 rule IBD_filter:
     input: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}.genome.gz"
     output: f"plink/{BASE}_LDp_sHWE_IBDflt.bed"
     params:
         awk_string = "\'{if($10>" + config['IBD']['pi_hat'] + ") print $0}\' > accessory/related_IBS_results.txt"
-    shell:
-        f"zcat {{input[1]}} | awk {{params.awk_string}}; {CMD_PREFIX} Rscript scripts/filter_relateds.R -r accessory/related_IBS_results.txt -o accessory/excluded_related_samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --remove accessory/excluded_related_samples.txt --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt"
+    run:
+        if config['IBD']['filter_relateds'] == 'true':
+            shell(f"zcat {{input[1]}} | awk {{params.awk_string}}; {CMD_PREFIX} Rscript scripts/filter_relateds.R -r accessory/related_IBS_results.txt -o accessory/excluded_related_samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --remove accessory/excluded_related_samples.txt --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt")
+        else:
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt")
 
 rule controlMatch:
     # TODO: add option for user to provide samples file
@@ -214,21 +251,22 @@ rule controlMatch:
         if config['match_controls'] == 'true':
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; "
                   f"{CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples2.txt; "
-                  "awk '{{print $2}}' accessory/samples2.txt > accessory/samples.txt")
+                  "awk '{{print $2}}' accessory/samples2.txt | sed 's/#//g' > accessory/samples.txt")
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/samples2.txt --make-bed --out input/{BASE}_MapRdy; "
                   f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep accessory/samples2.txt --make-bed --out input/{BASE}_PCA")
         else:
-            shell("{CMD_PREFIX} awk '{{print $2}}' input/" + BASE + "_LDp_sHWE_IBDflt.fam > accessory/samples.txt")
+            shell("{CMD_PREFIX} awk '{{print $2}}' input/" + BASE + "_LDp_sHWE_IBDflt.fam | sed 's/#//g' > accessory/samples.txt")
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --make-bed --out input/{BASE}_MapRdy; "
                   f"{CMD_PREFIX} plink --bfile input/{BASE}_LDp_sHWE_IBDflt --make-bed --out input/{BASE}_PCA")
 
-rule estimate_kinship: # KING recommends no LD-pruning or extensive filtering (e.g. MAF) prior to using
-    input: f"input/{BASE}_MapRdy.bed"
-    output: f"accessory/{BASE}.kin", f"accessory/{BASE}.kin0"
-    run:
-        shell(f"{CMD_PREFIX} plink --bfile input/{BASE}_MapRdy --keep-allele-order --make-bed --out input/{BASE}_MapRdy_dfid; " +
-        "awk '{{print $2,$2,$3,$4,$5,$6}}' input/{BASE}_MapRdy.fam > input/{BASE}_MapRdy_dfid.fam; " +
-        f"{CMD_PREFIX} king -b input/{BASE}_MapRdy_dfid.bed --kinship --prefix accessory/{BASE}")
+
+# rule estimate_kinship: # KING recommends no LD-pruning or extensive filtering (e.g. MAF) prior to using
+#     input: f"input/{BASE}_MapRdy.bed"
+#     output: f"accessory/{BASE}.kin", f"accessory/{BASE}.kin0"
+#     run:
+#         shell(f"{CMD_PREFIX} plink --bfile input/{BASE}_MapRdy --keep-allele-order --make-bed --out input/{BASE}_MapRdy_dfid; " +
+#         "awk '{{print $2,$2,$3,$4,$5,$6}}' input/{BASE}_MapRdy.fam > input/{BASE}_MapRdy_dfid.fam; " +
+#         f"{CMD_PREFIX} king -b input/{BASE}_MapRdy_dfid.bed --kinship --prefix accessory/{BASE}")
 
 
 rule calcPCA:
@@ -248,15 +286,26 @@ rule admixMap:
             shell(f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s accessory/samples.txt -f input/{BASE}_MapRdy.fam -o {BASE} -P {PREDICTORS} -c {{threads}}")
 
 
+#TODO parallelize genesis_GWAS
+rule genesis_GWAS:
+    input: f"input/{BASE}_MapRdy.bed", f"plink/{BASE}_LDp_sHWE.bim"
+    output: f"{BASE}.genesis.txt", f"{BASE}.pcrelate.txt"
+    threads: int(config['gwas']['cores'])
+    run:
+        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -p input/{BASE}_MapRdy -k {{input[1]}} -n {config['gwas']['pc_num']} -o {BASE}.genesis.txt -l {config['LD_pruning']['r2_threshold']} -t {config['kinship_threshold']} -c {{threads}}"
+        if os.path.exists(config['covariate_file']): #Not tested
+                cmd += f" -C {config['covariate_file']}"
+        shell(cmd)
+
 rule blink_convert:
-    input: f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.eigenvec"
+    input: f"input/{BASE}_MapRdy.bed", f"{BASE}.pcrelate.txt"
     output: f"BLINK/{BASE}_MapRdy.pos"
     run:
         with open('scripts/blink_convert.sh', 'w') as temp_sh:
             cmd = f"rm -r -f BLINK/*; chmod -R 775 BLINK/; cp -r {config['gwas']['blink_dir']}/* BLINK; " \
                   f"cp input/{BASE}* BLINK; cd BLINK; chmod 770 *; sed 's/#//g' -i {BASE}_MapRdy.fam; " \
                   f"./blink_linux --file {BASE}_MapRdy --compress --plink; cd .. ; " \
-                  f"Rscript {CODE}/blink_prep.R -f BLINK/{BASE}_MapRdy.fam -d plink/{BASE}.eigenvec -n {config['gwas']['pc_num']} -o BLINK/{BASE}_MapRdy "
+                  f"Rscript {CODE}/blink_prep.R -f BLINK/{BASE}_MapRdy.fam -d {BASE}.pcrelate.txt -n {config['gwas']['pc_num']} -o BLINK/{BASE}_MapRdy "
             if os.path.exists(config['covariate_file']): #Not tested
                 cmd += f"-c {config['covariate_file']}"
             temp_sh.write(cmd)
@@ -271,20 +320,10 @@ rule blink_GWAS:
             temp_sh.write(f"cd BLINK; ./blink_linux --file {BASE}_MapRdy --binary --gwas --parallel 1 --cycle-size {threads}; cp phenotype_GWAS_result.txt ../{BASE}.blink.txt")
         shell(f"{CMD_PREFIX} sh scripts/blink_gwas.sh")
 
-#TODO parallelize genesis_GWAS
-rule genesis_GWAS:
-    input: f"input/{BASE}_MapRdy.bed", f"accessory/{BASE}.kin0", f"plink/{BASE}.LDkeep.prune.in"
-    output: f"{BASE}.genesis.txt"
-    threads: int(config['gwas']['cores'])
-    run:
-        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -p input/{BASE}_MapRdy -k {{input[1]}} -n {config['gwas']['pc_num']} -o {BASE}.genesis.txt -l {config['LD_pruning']['r2_threshold']} -t {config['kinship_threshold']} -c {{threads}}"
-        if os.path.exists(config['covariate_file']): #Not tested
-                cmd += f" -C {config['covariate_file']}"
-        shell(cmd)
-
 #TODO: Finish make_report for admixMap
+# Included in
 rule make_report:
-    input: f"{BASE}.blink.txt", f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt"
+    input: f"{BASE}.blink.txt", f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt", f"{BASE}.admixmap.txt"
     output: f"{BASE}-Mapping-report.pdf"
     run:
         # if not os.path.exists("chrom_plots"): os.mkdir("chrom_plots")

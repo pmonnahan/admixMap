@@ -2,9 +2,14 @@
 outname: "AncInf" # MODIFY: prefix used for naming output
 query: "PATH_TO_PLINK_PREFIX" #MODIFY: Prefix for PLINK files containing all of the query samples for ancestry inference
 admixMapping:
-  rfmix: "OUTPUT_DIRECTORY_OF RFMIX"
+  rfmix: "OUTPUT_DIRECTORY_OF RFMIX" #MODIFY
   cores: '12'
   premunged: "false"
+singularity:
+  use_singularity: 'true'
+  image: '/home/pmonnaha/pmonnaha/singularity/AncestryInference.sif' # MODIFY
+  code: 'scripts/'
+  module: 'module load singularity'
 LD_pruning:
   window_size: "50"
   step_size: "5"
@@ -16,23 +21,20 @@ sHWE:
   downsample_rounds: '2000'
   downsample_number: '1000'
   maf: '0.05'
+  test_threshold: '100000'
 IBD:
   cpj: '100000' # number of comparisons per job for IBS calculation
   pi_hat: '0.125'
   ibd1: '0.2'
+  filter_relateds: 'false'
 kinship_threshold: '0.125'
-match_controls: 'true'
+match_controls: 'false'
 predictors: 'sex,AFR,AFR.glob'
 covariate_file: 'none' # Tab-delimited file with header line specifying names of covariates.  First column MUST be labeled with 'taxa' and should contain sample IDs EXACTLY as they are specified in input plink files.
-singularity:
-  use_singularity: 'true'
-  image: '/home/pmonnaha/pmonnaha/singularity/AncestryInference.sif' # MODIFY
-  code: '/scripts/'
-  module: 'module load singularity'
 samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
 cmd_prefix: "module load plink/1.90b6.10; module load htslib/1.6; module load bcftools/1.9;"
 gwas:
-  pc_num: '4' #Currently unused
+  pc_num: '4'
   blink_dir: "/usr/local/bin/BLINK"
   cores: '12'
 local_run: 'false'
