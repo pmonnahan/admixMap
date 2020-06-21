@@ -251,7 +251,7 @@ rule controlMatch:
         if config['match_controls'] == 'true':
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; "
                   f"{CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples2.txt; "
-                  "awk '{{print $2}}' accessory/samples2.txt | sed 's/#//g' > accessory/samples.txt")
+                  "awk '{{split($2,a,\"_\"); printf(\"%s\\n%s\\n\",$2,a[1])}}' accessory/samples2.txt | sed 's/#//g' > accessory/samples.txt")
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/samples2.txt --make-bed --out input/{BASE}_MapRdy; "
                   f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep accessory/samples2.txt --make-bed --out input/{BASE}_PCA")
         else:
@@ -326,18 +326,19 @@ rule make_report:
     input: f"{BASE}.blink.txt", f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt", f"{BASE}.admixmap.txt"
     output: f"{BASE}-Mapping-report.pdf"
     run:
-        # if not os.path.exists("chrom_plots"): os.mkdir("chrom_plots")
-        # with open("scripts/gather_report_data.sh", 'w') as report_cmds:
+        if not os.path.exists("chrom_plots"): os.mkdir("chrom_plots")
+        with open("scripts/gather_report_data.sh", 'w') as report_cmds:
         #     report_cmds.write(f"bcftools query -l {REFBCF} | grep -f - accessory/Population_Map_File.txt > accessory/realized_ref_samples.txt\n")
-        #     report_line = f"echo \'rmarkdown::render(\"scripts/AncInf_report.Rmd\", output_file=\"{BASE}-AncestryInference-report.pdf\", " \
-        #                   f"params=list(rfmix_dir=\"rfmix\", " \
-        #                   f"fam_file=\"{QUERY}.fam\", " \
-        #                   f"samp_file=\"accessory/realized_ref_samples.txt\", " \
-        #                   f"subpop_file=\"{POPFILE}\", " \
-        #                   f"rulegraph_file=\"{BASE}-rulegraph.png\", " \
-        #                   f"config_file=\"workflow/config.yml\"))\' | R --vanilla"
-        #     report_cmds.write(report_line)
-        # shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-AncestryInference-report.pdf {BASE}-AncestryInference-report.pdf")
-        shell(f"touch {BASE}-Mapping-report.pdf")
+            report_line = f"echo \'rmarkdown::render(\"scripts/admixMap-report.Rmd\", output_file=\"{BASE}-Mapping-report.pdf\", " \
+                          f"params=list(genesis_rslt=\"{BASE}.genesis.txt\", " \
+                          f"blink_rslt=\"{BASE}.blink.txt\", " \
+                          f"admixMap_rslt=\"{BASE}.admixmap.txt\", " \
+                          f"stats_file=\"NA\", " \
+                          f"pruned_bim=\"plink/{BASE}_LDp_sHWE.bim\", " \
+                          f"rulegraph_file=\"{BASE}-rulegraph.png\", " \
+                          f"config_file=\"workflow/config.yml\"))\' | R --vanilla"
+            report_cmds.write(report_line)
+        shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf")
+        # shell(f"touch {BASE}-Mapping-report.pdf")
 
 

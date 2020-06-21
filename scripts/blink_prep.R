@@ -39,7 +39,7 @@ fam %<>% mutate(taxa = V2, phenotype = V6, sex = V5)
 
 fam %>% select(taxa, phenotype) %>% write.table(paste0(opt$outPrefix, ".txt"), row.names = F, quote = F)
 
-pca = read.table(opt$PCAfile, comment.char="")
+pca = read.table(opt$PCAfile, comment.char="", header=T)
 
 # pca_num = as.numeric(opt$PCAnumber) + 2
 # 

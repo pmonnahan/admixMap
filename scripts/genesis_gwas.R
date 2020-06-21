@@ -98,7 +98,7 @@ snpgdsBED2GDS(bed.fn = paste(opt$plink_prefix, ".bed", sep = ""),
               fam.fn = paste(opt$plink_prefix, ".fam", sep = ""), 
               out.gdsfn = gdsFile)
 
-geno <- GdsGenotypeReader(filename = gdsFile)
+geno <- GdsGenotypeReader(filename = gdsFile, allow.fork = T)
 genoData <- GenotypeData(geno)
 
 #Load phenotype and covariate data
@@ -124,15 +124,15 @@ snpIDs = getSnpID(genoData)
 pruned = which(snpIDs %in% pbim$V2)
 
 # pruned = read.table(opt$ld_prune_snps)
-KINGmat <- snpgdsIBDKING(gds, snp.id=pruned, verbose=FALSE)
+KINGmat <- snpgdsIBDKING(gds, snp.id=pbim$V2, verbose=FALSE)
 
 kingMat <- KINGmat$kinship
 dimnames(kingMat) <- list(KINGmat$sample.id, KINGmat$sample.id)
 
-pcair = pcair(genoData, kinobj = kingMat, divobj = kingMat, snp.include = pruned)
+pcair = pcair(genoData, kinobj = kingMat, divobj = kingMat, snp.include = pbim$V2)
 
 
-genoIterator1 <- GenotypeBlockIterator(genoData, snpBlock = snpBlockSize, snpInclude = pruned)
+genoIterator1 <- GenotypeBlockIterator(genoData, snpBlock = snpBlockSize, snpInclude = pbim$V2)
 
 mypcrelate = pcrelate(genoIterator1, pcair$vectors[,1:as.numeric(opt$pc_number),drop=FALSE])
 myGRM <- pcrelateToMatrix(mypcrelate, thresh=opt$kin_threshold, scaleKin=2) # Using a threshold actually has a minimal effect here.  
@@ -164,11 +164,10 @@ scanAnnot <- ScanAnnotationDataFrame(mydat)
 pc.df <- as.data.frame(pcair$vectors)
 names(pc.df) <- paste0("PC", 1:ncol(pcair$vectors))
 pc.df$sample.id <- row.names(pcair$vectors)
-pc.df <- pc.df %>% mutate(scanID = sample.id) %>% select(-sample.id) %>% left_join(pc.df, pData(scanAnnot), by="scanID")
+pc.df <- pc.df %>% mutate(scanID = sample.id) %>% select(-sample.id) %>% left_join(pData(scanAnnot), by="scanID")
 
 # add PCs to sample annotation in SeqVarData object
-annot <- AnnotatedDataFrame(pc.df)
-sampleData(seqData) <- annot
+scanAnnot <- ScanAnnotationDataFrame(pc.df)
 
 # fit the null mixed model
 if (opt$distribution_family == "binomial"){
@@ -180,11 +179,15 @@ if (opt$distribution_family == "binomial"){
 # Perform GWAS
 chroms = getChromosome(genoData)
 Chroms = unique(chroms)
-results = foreach(i = 1:length(Chroms), .combine = rbind) %doPar% {
+results = foreach(i = 1:length(Chroms), .combine = rbind) %dopar% {
   snpIDs = getSnpID(genoData, chroms==Chroms[i])
   genoIterator <- GenotypeBlockIterator(genoData, snpBlock=snpBlockSize, snpInclude = snpIDs)
   assocTestSingle(genoIterator, null.model = nullmod, test = Test)
 }
+
+# if (opt$distribution_family == "binomial"){
+#   results %<>% mutate(Score.pval=SPA.pval) %>% select(-SPA.pval)
+# }
 
  # Score.SPA is specifically used for binomial models
 write.table(results, outName, quote=F, row.names = F)

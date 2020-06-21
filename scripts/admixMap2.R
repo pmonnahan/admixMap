@@ -38,7 +38,7 @@ option_list <- list(
 )
 
 opt <- parse_args(OptionParser(option_list=option_list))
-registerDoParallel(cores = as.numeric(opt$cores))
+registerDoParallel(cores = as.numeric(opt$cores) - 1)
 predictors = strsplit(opt$Predictors, ",")[[1]]
 
 ######################### END: Read in arguments #########################
@@ -97,6 +97,7 @@ preMunge = function(fileDir, samples, fam_pheno, other_pheno){
   for (f in 1:length(files)){
     in_name = paste(fileDir, files[f], sep = "")
     anc_dat = readMSP(in_name)
+    #This assumes that names will match!
     anc_dat %<>% left_join(pdat, by="sample", suffix = c("",".glob"))
     if (samples != "all"){
       anc_dat %<>% filter(sample %in% samples$V1)
@@ -111,15 +112,14 @@ calcGLM = function(fileDir, predictors, family = "binomial", random = -9){
   for (f in 1:length(files)){
     dat = read.table(paste(fileDir, files[f], sep = ""), header = T, comment.char = "")
     pos = dat %>% distinct(spos)
-    res = foreach(i = 1:nrow(pos), .combine=rbind) %dopar% {
+    res = foreach(i = 1:nrow(pos), .combine=rbind, .errorhandling="remove") %dopar% {
       chrom = dat %>% distinct(chm)
       ndat = dat[dat$spos==pos[i,],]
       if (random==-9){
         mod = glm(reformulate(paste(predictors, collapse='+'), response = "pheno"), data = ndat, family = family)
       }
       else{
-        mod = glmer(reformulate(paste(predictors, collapse='+'), response = "pheno"), data = ndat, family = family, control = glmerControl(optimizer = "bobyqa"),
-            nAGQ = 10)
+        mod = glmer(reformulate(paste(predictors, collapse='+'), response = "pheno"), data = ndat, family = family, control = glmerControl(optimizer = "bobyqa"), nAGQ = 10)
       }
       coeffs = tidy(mod) %>% mutate(Term = case_when(term=="(Intercept)" ~ "intercept", TRUE ~ term)) %>% select(-term) %>% pivot_longer(c(estimate, std.error,statistic, p.value)) %>% mutate(term = paste(Term, name, sep = ".")) %>% select(-c(name,Term)) %>% pivot_wider(names_from = term)
       tibble(chm = ndat[1,1], spos = pos[i,], epos = ndat[1,3], sgpos = ndat[1,4], egpos = ndat[1,5], snps = ndat[1,6]) %>% bind_cols(glance(mod),coeffs)

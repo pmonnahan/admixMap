@@ -12,6 +12,7 @@ params:
   admixMap_rslt: NA
   fam_file: NA
   stats_file: NA
+  pruned_bim: NA
   rulegraph_file: NA
   config_file: NA
 ---
@@ -33,6 +34,7 @@ library("stringr")
 library("foreach")
 library("forcats")
 library("ggridges")
+library("GWASTools")
 ```
 
 ```{r, include=FALSE}
@@ -73,8 +75,10 @@ cases = fam %>% filter(V6==2) %>% select(V2) %>% mutate(V1=V2) %>% select(V1)
 rulegraph_file <- params$rulegraph_file
 yaml <- read_yaml(params$config_file)
 
-gen = params$genesis_rslt
-blink = params$blink_rslt
+gen = read.table(params$genesis_rslt, head = T)
+blink = read.table(params$blink_rslt, head = T)
+adm = read.table(params$admixMap_rslt, head = T)
+pbim = read.table(params$pruned_bim, head=T)
 
 
 
@@ -116,7 +120,69 @@ control matching
 
 admixMap summary
 
+## Q-Q plots
+
+### GENESIS
+```{r}
+gen %>% sample_n(500000) %>% filter(!is.na(Score.pval)) %.>% qqPlot(.$Score.pval) 
+```
+
+### BLINK
+```{r}
+blink %>% sample_n(500000) %>% filter(!is.na(p_value)) %.>% qqPlot(.$p_value) 
+```
+
+
+## Inflation Factors
+```{r}
+gen %>% filter(variant.id %in% pbim$V2) %>% mutate(chisq = Score.stat ^ 2) %>% select(chisq) %.>% median(., na.rm=T) / 0.455  
+```
+
+Import marker names from LD-pruned, sHWE filtered dataset.  Find median of these TEST STATISTICS and divide by 0.455
+
+## Manhattan plots
+
+### GENESIS
+```{r}
+manhattanPlot(gen$Score.pval, gen$chr)
+```
+
+```{r, include=F}
+png("genesis.mnht.png")
+manhattanPlot(gen$Score.pval, gen$chr)
+dev.off()
+```
+
+
+### BLINK
+```{r}
+manhattanPlot(blink$p_value, blink$chr)
+```
+
+
+```{r, include=F}
+png("blink.mnht.png")
+manhattanPlot(blink$p_value, blink$chr)
+dev.off()
+```
+
+
 chrom plots
+```{r}
+# for (i = 1:22){
+#   png()
+# blink.slim %>% filter(chr==10 & datset!='all')%>% ggplot(aes(y=-log10(p_value), x = pos/1000000, color = datset)) + geom_point(alpha=0.3) + 
+# geom_hline(yintercept = -log10(0.05), linetype="dashed") + geom_hline(yintercept = -log10(0.00000001), linetype="dotted") + geom_vline(xintercept = 63.723577, linetype="dashed", color = "red", alpha = 0.5) + geom_vline(xintercept = 8.104208, linetype="dashed", color = "red", alpha = 0.5) + geom_vline(xintercept = 22.856946, linetype="dashed", color = "red", alpha = 0.5) + geom_vline(xintercept = 12.6292655, linetype="dashed", color = "red", alpha = 0.5) + geom_text(x = 69.823577, y = 20, label="ARID5b") + geom_text(x = 2.104208, y = 20, label="GATA3") + geom_text(x = 29.856946, y = 18, label="PIP4K2A") + geom_text(x = 17.6292655, y = 22, label="LHPP") + ggtitle("Chromosome 10") + xlab("Position (Mb)")
+# }
+
+```
+
+
+output list of snps exceeding 5-8
+```{r}
+
+```
+
 
 
 \newpage
