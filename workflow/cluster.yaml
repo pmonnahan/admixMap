@@ -36,6 +36,10 @@ blink_GWAS:
 
 genesis_GWAS:
   walltime: '48:00:00'
-  mem: '64gb'
+  mem: '100gb'
+
+genesis_prep:
+  walltime: '72:00:00'
+  mem: '100gb'
 
 

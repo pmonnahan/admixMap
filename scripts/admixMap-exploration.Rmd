@@ -1,0 +1,48 @@
+---
+title: "AdmixtureMapping-exploration"
+output: html_notebook
+---
+
+
+
+```{r}
+adm = read.table("~/Documents/Research/admixMap/admiral_impt_AA.admixmap.txt", head = T)
+
+g.anc = read.table("~/Documents/Research/admixMap/data/admiral_impt_AA.globalancestry.txt",head=T)
+
+anc = g.anc %>% select(-sample)
+
+```
+
+Number of windows tested
+```{r}
+adm %>% filter(anc=="EUR") %>% nrow()
+```
+
+
+```{r}
+adm %>% filter(anc=="EUR") %>% select(snps) %>% summary()
+adm %>% filter(anc=="EUR") %>% ggplot(aes(x = snps)) + geom_histogram(bins=30) + scale_x_continuous(name="# Snps per window", breaks = seq(0,60,5))
+```
+
+Windows are mostly around 0.2 cM
+```{r}
+adm %>% mutate(gdis = egpos - sgpos) %>% select(gdis) %>% summary()
+
+adm %>% mutate(gdis = egpos - sgpos) %>% ggplot(aes(x = 1, y = gdis)) + geom_boxplot() + ylab("Genetic Distance (cM)") + theme(axis.text.x=element_blank(), axis.ticks.x = element_blank()) + xlab("") + scale_y_log10()
+```
+
+```{r}
+map = adm %>% mutate(cM = (sgpos + egpos) / 2, chr = chm) %>% distinct(cM, chr)
+
+TT = foreach(i=seq(2,16,2),.combine='rbind') %:% foreach(j=seq(2,5),.combine='rbind') %dopar% {
+  tt = get_thresh_simstat(g = i, map = map, props = anc[1:j], nreps = 500)
+  tibble(g = i, pops = j, thresh = tt$threshold)
+}
+
+```
+
+```{r}
+TT %>% ggplot(aes(x = g, y = thresh, color = as.factor(pops), group = as.factor(pops))) + geom_line() + xlab("Generations since admixture began") + ylab("Significance threshold") + scale_color_discrete(name="Number of\nAncestral Populations")
+```
+

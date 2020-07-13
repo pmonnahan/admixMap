@@ -2,7 +2,9 @@
 outname: "AncInf" # MODIFY: prefix used for naming output
 query: "PATH_TO_PLINK_PREFIX" #MODIFY: Prefix for PLINK files containing all of the query samples for ancestry inference
 admixMapping:
+  skip: 'true'
   rfmix: "OUTPUT_DIRECTORY_OF RFMIX" #MODIFY
+  gen_since_admixture: '8'
   cores: '12'
   premunged: "false"
 singularity:
@@ -29,7 +31,9 @@ IBD:
   filter_relateds: 'false'
 kinship_threshold: '0.125'
 match_controls: 'false'
-predictors: 'sex,AFR,AFR.glob'
+control_number: '4'
+ancestry_predictors: 'AFR,EUR,AMR'
+other_predictors: 'sex'  # this should include the variable names provided in covariate_file if those variables are desired to be included in the admixture mapping.
 covariate_file: 'none' # Tab-delimited file with header line specifying names of covariates.  First column MUST be labeled with 'taxa' and should contain sample IDs EXACTLY as they are specified in input plink files.
 samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
 cmd_prefix: "module load plink/1.90b6.10; module load htslib/1.6; module load bcftools/1.9;"
@@ -37,4 +41,11 @@ gwas:
   pc_num: '4'
   blink_dir: "/usr/local/bin/BLINK"
   cores: '12'
+  sig_threshold: '0.000005'
+  covars: 'sex'
 local_run: 'false'
+annotation:
+  rsIDs: "/home/spectorl/pmonnaha/misc/hg19_rsID_key.txt"
+conditional_analysis:
+    snp_list: 'none'
+    distance: '100000'

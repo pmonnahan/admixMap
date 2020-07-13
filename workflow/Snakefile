@@ -19,10 +19,9 @@ configfile: "workflow/config.yml"
 # Parse config.yml file
 QUERY = config['query']
 RFMIX = config['admixMapping']['rfmix']
-PREDICTORS = config['predictors']
 
 # Make subdirectories
-dirs = ["input", "accessory", "plink", "plink/DS", "BLINK", "OandE", "data", "sHWE", "scripts"]
+dirs = ["input", "accessory", "plink", "plink/DS", "BLINK", "OandE", "data", "sHWE", "scripts", "figures", "figures/chrom_plots"]
 for directory in dirs:
     if not os.path.exists(directory): os.mkdir(directory)
 
@@ -62,15 +61,16 @@ if num_jobs <= 1: # Attempt to catch an error that arises in instances where the
     num_jobs = math.ceil(comparisons / comparisons_per_job)
 
 if config['local_run'] == 'true':
-    localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, blink_GWAS, extract_optimum_popnum
+    localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, blink_GWAS, extract_optimum_popnum, cat_admixMap
 else:
-    localrules: all, extract_optimum_popnum
+    localrules: all, extract_optimum_popnum, cat_admixMap
 
 def get_all_inputs(wildcards):
     input_list = ["accessory/sHWE_tested_snps.txt", f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png",
                   f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec",
-                  f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed", f"plink/{BASE}.genome.gz",
-                  f"{BASE}.admixmap.txt", f"{BASE}.blink.txt", f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf"]
+                  f"accessory/samples.txt", f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.genome.gz",
+                  f"{BASE}.blink.txt", f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf", f"{BASE}.genesis.sig.annt.txt", f"{BASE}.blink.sig.annt.txt"]
+    if config['admixMapping']['skip'] != 'true': input_list.append(f"{BASE}.admixmap.txt")
     # input_list += expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs + 1))
     # input_list += expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))
     return(input_list)
@@ -81,6 +81,16 @@ def get_cM_inputs(wildcards):
         input_list.append(f"plink/{BASE}.genome.gz")
     return(input_list)
 
+def get_dataprep_input(wildcards):
+    input_list = ["accessory/samples.txt", f"{BASE}.globalancestry.txt"]
+    inFile = [f"{RFMIX.rstrip('/')}/{x}" for x in os.listdir(RFMIX) if x.endswith(f"chr{wildcards.CHROM}.msp.tsv")]
+    assert len(inFile) == 1
+    return(input_list + inFile + ["accessory/excluded_related_samples.txt"])
+
+def get_report_input(wildcards):
+    input_list = [f"{BASE}.blink.txt", f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt"]
+    if config['admixMapping']['skip'] != 'true': input_list.append(f"{BASE}.admixmap.txt")
+    return(input_list)
 
 rule all:
     input: get_all_inputs
@@ -188,26 +198,28 @@ rule optimize_sHWE:
 
 rule extract_optimum_popnum:
     input: expand(f"sHWE/{BASE}_sHWE_{{d}}", d=config['sHWE']['pop_nums'].split(","))
-    output: f"sHWE/.optimum_popnum.txt"
+    output: f"sHWE/.optimum_popnum.txt", "sHWE/entropy.txt"
     params:
         bins = int(config['sHWE']['bins'])
     run:
         max_entropy = -9
         best_popnum = -9
-        for file in input:
-            popnum = file.split("_")[-1]
-            dat = pd.read_table(file, header=None) # read in vector of p-values from sHWE
-            binned = pd.cut(dat.iloc[:,0], params.bins).value_counts(sort=False) # bin and count vector values
-            entropy = scipy.stats.entropy(binned.iloc[1:,]) # Calculate entropy of bin counts, excluding first bin that corrresponds to bin containing true positives (i.e. sites truly out of HWE)
-            if entropy > max_entropy:
-                best_popnum = popnum
-                max_entropy = entropy
+        with open("sHWE/entropy.txt", 'w') as ent_file:
+            for file in input:
+                popnum = file.split("_")[-1]
+                dat = pd.read_table(file, header=None) # read in vector of p-values from sHWE
+                binned = pd.cut(dat.iloc[:,0], params.bins).value_counts(sort=False) # bin and count vector values
+                entropy = scipy.stats.entropy(binned.iloc[1:,]) # Calculate entropy of bin counts, excluding first bin that corrresponds to bin containing true positives (i.e. sites truly out of HWE)
+                ent_file.write(f"{popnum}\t{entropy}\n")
+                if entropy > max_entropy:
+                    best_popnum = popnum
+                    max_entropy = entropy
         assert(max_entropy != -9 and best_popnum != -9)
         with open("sHWE/.optimum_popnum.txt", 'w') as outfile: outfile.write(str(best_popnum))
 
 
 rule structHWE:
-    input: f"sHWE/.optimum_popnum.txt", expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
+    input: "sHWE/entropy.txt", f"sHWE/.optimum_popnum.txt", expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
     output: f"sHWE/{BASE}_sHWE-DS{{f}}", f"sHWE/{BASE}_sHWE-DS{{f}}.rmv.bim"
     params:
         threshold = config['sHWE']['threshold']
@@ -234,40 +246,30 @@ rule filter_sHWE_SNPs:
 
 rule IBD_filter:
     input: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}.genome.gz"
-    output: f"plink/{BASE}_LDp_sHWE_IBDflt.bed"
+    output: f"plink/{BASE}_LDp_sHWE_IBDflt.bed", "accessory/excluded_related_samples.txt"
     params:
         awk_string = "\'{if($10>" + config['IBD']['pi_hat'] + ") print $0}\' > accessory/related_IBS_results.txt"
     run:
         if config['IBD']['filter_relateds'] == 'true':
-            shell(f"zcat {{input[1]}} | awk {{params.awk_string}}; {CMD_PREFIX} Rscript scripts/filter_relateds.R -r accessory/related_IBS_results.txt -o accessory/excluded_related_samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --remove accessory/excluded_related_samples.txt --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt")
+            shell(f"zcat {{input[1]}} | awk {{params.awk_string}}; {CMD_PREFIX} Rscript {CODE}/filter_relateds.R -r accessory/related_IBS_results.txt -o accessory/excluded_related_samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --remove accessory/excluded_related_samples.txt --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt")
         else:
-            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt")
+            shell(f"zcat {{input[1]}} | awk {{params.awk_string}}; {CMD_PREFIX} Rscript {CODE}/filter_relateds.R -r accessory/related_IBS_results.txt -o accessory/excluded_related_samples.txt; {CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt")
 
 rule controlMatch:
     # TODO: add option for user to provide samples file
     input: get_cM_inputs
-    output: f"accessory/samples.txt", f"input/{BASE}_MapRdy.bed", f"input/{BASE}_PCA.bed"
+    output: f"accessory/samples.txt", f"input/{BASE}_CtlMat.bed", f"input/{BASE}_PCA.bed"
     run:
         if config['match_controls'] == 'true':
-            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 1 --out plink/{BASE}; "
-                  f"{CMD_PREFIX} " + "awk '{{if(NF!=2) printf(\"%s\\n%s\\n\",$2,$3)}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples2.txt; "
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 {config['control_number']} --out plink/{BASE}; "
+                  f"{CMD_PREFIX} " + "awk '{{if(NF!=2) for (i = 2; i <= NF; i++) print $i}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples2.txt; "
                   "awk '{{split($2,a,\"_\"); printf(\"%s\\n%s\\n\",$2,a[1])}}' accessory/samples2.txt | sed 's/#//g' > accessory/samples.txt")
-            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/samples2.txt --make-bed --out input/{BASE}_MapRdy; "
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/samples2.txt --make-bed --out input/{BASE}_CtlMat; "
                   f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep accessory/samples2.txt --make-bed --out input/{BASE}_PCA")
         else:
             shell("{CMD_PREFIX} awk '{{print $2}}' input/" + BASE + "_LDp_sHWE_IBDflt.fam | sed 's/#//g' > accessory/samples.txt")
-            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --make-bed --out input/{BASE}_MapRdy; "
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --make-bed --out input/{BASE}_CtlMat; "
                   f"{CMD_PREFIX} plink --bfile input/{BASE}_LDp_sHWE_IBDflt --make-bed --out input/{BASE}_PCA")
-
-
-# rule estimate_kinship: # KING recommends no LD-pruning or extensive filtering (e.g. MAF) prior to using
-#     input: f"input/{BASE}_MapRdy.bed"
-#     output: f"accessory/{BASE}.kin", f"accessory/{BASE}.kin0"
-#     run:
-#         shell(f"{CMD_PREFIX} plink --bfile input/{BASE}_MapRdy --keep-allele-order --make-bed --out input/{BASE}_MapRdy_dfid; " +
-#         "awk '{{print $2,$2,$3,$4,$5,$6}}' input/{BASE}_MapRdy.fam > input/{BASE}_MapRdy_dfid.fam; " +
-#         f"{CMD_PREFIX} king -b input/{BASE}_MapRdy_dfid.bed --kinship --prefix accessory/{BASE}")
-
 
 rule calcPCA:
     input: f"input/{BASE}_PCA.bed"
@@ -275,70 +277,119 @@ rule calcPCA:
     shell:
         f"{CMD_PREFIX} plink --bfile input/{BASE}_PCA --pca --out plink/{BASE}"
 
-rule admixMap:
+rule get_globalAncestry:
     input: "accessory/samples.txt"
+    output: "{BASE}.globalancestry.txt"
+    shell:
+        f"{CMD_PREFIX} Rscript {CODE}/getGlobalAnc.R -d {RFMIX} -s accessory/samples.txt -o {{output}}"
+
+rule admixMap_dataPrep:
+    input: get_dataprep_input
+    output: f"input/{BASE}_chr{{CHROM}}.admixMap.dat"
+    ## Add related filtering plink command just here prior to prepping data
+    shell: f"grep -v -f accessory/excluded_related_samples.txt accessory/samples.txt > accessory/samples_admixMap.txt; {CMD_PREFIX} Rscript {CODE}/admixMunge.R -d {{input[2]}} -g {{input[1]}} -s accessory/samples_admixMap.txt -f input/{BASE}_CtlMat.fam -o {{output}}"
+
+rule admixMap:
+    input: f"input/{BASE}_chr{{CHROM}}.admixMap.dat"
+    output: f"{BASE}_chr{{CHROM}}.admixmap.txt"
+    threads: 4
+    shell: f"{CMD_PREFIX} Rscript {CODE}/admixMap2.R -f {{input}} -o {BASE}_chr{{wildcards.CHROM}} -P {config['ancestry_predictors']} -p {config['other_predictors']} -c {{threads}}"
+
+rule cat_admixMap:
+    input: expand(f"{BASE}_chr{{CHROM}}.admixmap.txt", CHROM = range(1,23))
     output: f"{BASE}.admixmap.txt"
-    threads: int(config['admixMapping']['cores'])
     run:
-        if config['admixMapping']['premunged'] == 'true':
-            shell(f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s accessory/samples.txt -f input/{BASE}_MapRdy.fam -o {BASE} -P {PREDICTORS} -c {{threads}} -m stats")
-        else:
-            shell(f"{CMD_PREFIX} Rscript scripts/admixMap2.R -d {RFMIX} -s accessory/samples.txt -f input/{BASE}_MapRdy.fam -o {BASE} -P {PREDICTORS} -c {{threads}}")
+        shell(f"head -n 1 {BASE}_chr1.admixmap.txt > header.txt; tail -q -n +2  {BASE}_chr*.admixmap.txt > body.txt; cat header.txt body.txt > {BASE}.admixmap.txt; rm header.txt; rm body.txt")
 
-
-#TODO parallelize genesis_GWAS
-rule genesis_GWAS:
-    input: f"input/{BASE}_MapRdy.bed", f"plink/{BASE}_LDp_sHWE.bim"
-    output: f"{BASE}.genesis.txt", f"{BASE}.pcrelate.txt"
-    threads: int(config['gwas']['cores'])
+rule genesis_prep:
+    input: f"plink/{BASE}_sub.bed", f"plink/{BASE}_LDp_sHWE.bim"
+    output: f"{BASE}.genesis.pdat", f"{BASE}.genesis.grm.gds", f"{BASE}.genesis.gds"
     run:
-        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -p input/{BASE}_MapRdy -k {{input[1]}} -n {config['gwas']['pc_num']} -o {BASE}.genesis.txt -l {config['LD_pruning']['r2_threshold']} -t {config['kinship_threshold']} -c {{threads}}"
+        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R -p plink/{BASE}_sub -k {{input[1]}} -n {config['gwas']['pc_num']} -o {BASE} -l {config['LD_pruning']['r2_threshold']} -t {config['kinship_threshold']}"
         if os.path.exists(config['covariate_file']): #Not tested
                 cmd += f" -C {config['covariate_file']}"
         shell(cmd)
 
+rule genesis_GWAS:
+    input: f"{BASE}.genesis.gds", f"{BASE}.genesis.pdat", f"{BASE}.genesis.grm.gds"  # No control matching is done because SPA method accommodates imbalanced case/control ratios
+    output: f"{BASE}.genesis.txt"
+    threads: int(config['gwas']['cores'])
+    run:
+        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['other_predictors']} -o {BASE}.genesis.txt -c {{threads}}"
+        shell(cmd)
+
 rule blink_convert:
-    input: f"input/{BASE}_MapRdy.bed", f"{BASE}.pcrelate.txt"
-    output: f"BLINK/{BASE}_MapRdy.pos"
+    input: f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.eigenvec", #f"{BASE}.pcrelate.txt"
+    output: f"BLINK/{BASE}_CtlMat.pos"
     run:
         with open('scripts/blink_convert.sh', 'w') as temp_sh:
             cmd = f"rm -r -f BLINK/*; chmod -R 775 BLINK/; cp -r {config['gwas']['blink_dir']}/* BLINK; " \
-                  f"cp input/{BASE}* BLINK; cd BLINK; chmod 770 *; sed 's/#//g' -i {BASE}_MapRdy.fam; " \
-                  f"./blink_linux --file {BASE}_MapRdy --compress --plink; cd .. ; " \
-                  f"Rscript {CODE}/blink_prep.R -f BLINK/{BASE}_MapRdy.fam -d {BASE}.pcrelate.txt -n {config['gwas']['pc_num']} -o BLINK/{BASE}_MapRdy "
+                  f"cp input/{BASE}* BLINK; cd BLINK; chmod 770 *; sed 's/#//g' -i {BASE}_CtlMat.fam; " \
+                  f"./blink_linux --file {BASE}_CtlMat --compress --plink; cd .. ; " \
+                  f"Rscript {CODE}/blink_prep.R -f BLINK/{BASE}_CtlMat.fam -d plink/{BASE}.eigenvec -n {config['gwas']['pc_num']} -o BLINK/{BASE}_CtlMat "
             if os.path.exists(config['covariate_file']): #Not tested
                 cmd += f"-c {config['covariate_file']}"
             temp_sh.write(cmd)
         shell(f"{CMD_PREFIX} sh scripts/blink_convert.sh")
 
 rule blink_GWAS:
-    input: f"BLINK/{BASE}_MapRdy.pos"
+    input: f"BLINK/{BASE}_CtlMat.pos"
     output: f"{BASE}.blink.txt"
     threads: int(config['gwas']['cores'])
     run:
         with open('scripts/blink_gwas.sh', 'w') as temp_sh:
-            temp_sh.write(f"cd BLINK; ./blink_linux --file {BASE}_MapRdy --binary --gwas --parallel 1 --cycle-size {threads}; cp phenotype_GWAS_result.txt ../{BASE}.blink.txt")
+            temp_sh.write(f"cd BLINK; ./blink_linux --file {BASE}_CtlMat --binary --gwas --parallel 1 --cycle-size {threads}; cp phenotype_GWAS_result.txt ../{BASE}.blink.txt")
         shell(f"{CMD_PREFIX} sh scripts/blink_gwas.sh")
 
 #TODO: Finish make_report for admixMap
 # Included in
 rule make_report:
-    input: f"{BASE}.blink.txt", f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt", f"{BASE}.admixmap.txt"
-    output: f"{BASE}-Mapping-report.pdf"
+    input: get_report_input
+    output: f"{BASE}-Mapping-report.pdf", f"{BASE}.admixmap.sig.txt", f"{BASE}.genesis.sig.txt", f"{BASE}.blink.sig.txt"
     run:
-        if not os.path.exists("chrom_plots"): os.mkdir("chrom_plots")
         with open("scripts/gather_report_data.sh", 'w') as report_cmds:
         #     report_cmds.write(f"bcftools query -l {REFBCF} | grep -f - accessory/Population_Map_File.txt > accessory/realized_ref_samples.txt\n")
             report_line = f"echo \'rmarkdown::render(\"scripts/admixMap-report.Rmd\", output_file=\"{BASE}-Mapping-report.pdf\", " \
                           f"params=list(genesis_rslt=\"{BASE}.genesis.txt\", " \
                           f"blink_rslt=\"{BASE}.blink.txt\", " \
-                          f"admixMap_rslt=\"{BASE}.admixmap.txt\", " \
-                          f"stats_file=\"NA\", " \
+                          f"global_ancestry=\"{BASE}.globalancestry.txt\", " \
+                          f"fam_file=\"plink/{BASE}_sub.fam\", " \
+                          f"input_directory=\"input/\", " \
+                          f"gen_since_admix=\"{config['admixMapping']['gen_since_admixture']}\", " \
+                          f"gwas_threshold=\"{config['gwas']['sig_threshold']}\", " \
+                          f"ancestry_comps=\"{config['ancestry_predictors']}\", " \ 
+                          f"stats_file=\"{BASE}.admixmap.txt\", " \
                           f"pruned_bim=\"plink/{BASE}_LDp_sHWE.bim\", " \
-                          f"rulegraph_file=\"{BASE}-rulegraph.png\", " \
-                          f"config_file=\"workflow/config.yml\"))\' | R --vanilla"
+                          f"sHWE_entropy=\"sHWE/entropy.txt\", " \
+                          f"sHWE_markers=\"accessory/sHWE_tested_snps.txt\", " \
+                          f"rulegraph_file=\"{BASE}-rulegraph.png\", "
+            if config['admixMapping']['skip'] != 'true': report_line += f"admixMap_rslt=\"{BASE}.admixmap.txt\", "
+            else: report_line += f"admixMap_rslt=\"-9\", "
+            report_line += f"config_file=\"workflow/config.yml\"))\' | R --vanilla"
             report_cmds.write(report_line)
-        shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf")
+        shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf; mv *kinplot figures")
         # shell(f"touch {BASE}-Mapping-report.pdf")
 
+rule annotate_snps: # get genotype frequencies from VCF
+    input: f"{BASE}.genesis.sig.txt", f"{BASE}.blink.sig.txt"
+    output: f"{BASE}.genesis.sig.annt.txt", f"{BASE}.blink.sig.annt.txt"
+    run:
+        shell(f"cut -f 1 {BASE}.genesis.sig.txt > {BASE}.genesis.sigID.txt; cut -f 1 {BASE}.blink.sig.txt > {BASE}.blink.sigID.txt")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --extract {BASE}.genesis.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.gen.sig")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --extract {BASE}.blink.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.blink.sig")
+        cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.gen.sig.vcf | " \
+              "awk '{{split($8,a,\"|\"); split(a[1],b,\"=\"); print $1,$2,$4,$5,a[4],a[3],a[2],b[2]}}' | grep -v \"#\" > {BASE}.genesis.sig.preannt.txt"
+        shell(cmd)
+        cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.blink.sig.vcf | " \
+              "awk '{{split($8,a,\"|\"); split(a[1],b,\"=\"); print $1,$2,$4,$5,a[4],a[3],a[2],b[2]}}' | grep -v \"#\" > {BASE}.blink.sig.preannt.txt"
+        shell(cmd)
+        shell(f"{CMD_PREFIX} Rscript {CODE}/merge_annt.R -i {BASE}.blink.txt -s {BASE}.blink.sig.preannt.txt -r {config['annotation']['rsIDs']} -f {BASE}.blink.sig.frq.cc -o {BASE}.blink.sig.annt.txt")
+        shell(f"{CMD_PREFIX} Rscript {CODE}/merge_annt.R -i {BASE}.genesis.txt -s {BASE}.genesis.sig.preannt.txt -r {config['annotation']['rsIDs']} -f {BASE}.gen.sig.frq.cc -o {BASE}.genesis.sig.annt.txt")
 
+# rule conditional_analysis:
+#     input: 'snp_list'
+#     output: 'output.txt'
+#     run:
+#         loop over positions in snp_list
+#         extract genotype info and recode with additive encoding
+#         pass this to Rscript that will subset gds and do cond analysis

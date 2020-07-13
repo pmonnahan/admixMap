@@ -36,7 +36,7 @@ option_list <- list(
               help="number of pc's to include as covariates"),
   make_option(c("-O", "--outDir"), default = getwd(), help = "output directory"),
   make_option(c("-o", "--outPrefix"), help = "output prefix"),
-    make_option(c("-b", "--snp_block_size"), default = 5000, help = "Number of SNPs to read in to memory it at a time when doing the GWAS"),
+  make_option(c("-b", "--snp_block_size"), default = 5000, help = "Number of SNPs to read in to memory it at a time when doing the GWAS"),
   make_option(c("-f", "--distribution_family"), default = 'binomial', help = "Error distribution family for response variable.  For case/control, set to 'binomial'"),
   make_option(c("-s", "--samplesFile"), default="all", 
               help="path to file containing samples to include"),
@@ -47,7 +47,7 @@ option_list <- list(
 )
 
 opt <- parse_args(OptionParser(option_list=option_list))
-registerDoParallel(cores = as.numeric(opt$cores) - 1)
+registerDoParallel(cores = as.numeric(opt$cores))
 
 pdat = opt$pdat
 
@@ -119,7 +119,7 @@ if (opt$distribution_family == "binomial"){
   nullmod <- fitNullModel(scanAnnot, outcome = "pheno", covars = Covars, cov.mat = myGRM, family = binomial)
 } else{ 
   nullmod <- fitNullModel(scanAnnot, outcome = "pheno", covars = Covars, cov.mat = myGRM)
-  }
+}
 
 # Perform GWAS
 chroms = getChromosome(genoData)
@@ -134,18 +134,9 @@ results = foreach(i = 1:length(Chroms), .combine = rbind) %dopar% {
 #   results %<>% mutate(Score.pval=SPA.pval) %>% select(-SPA.pval)
 # }
 
- # Score.SPA is specifically used for binomial models
+# Score.SPA is specifically used for binomial models
 write.table(results, outName, quote=F, row.names = F)
 
 
-png(paste0(outName,'.qqplot'))
-if (opt$distribution_family == "binomial"){
-  results %<>% filter(!is.na(SPA.pval))
-  gg_qqplot(results$SPA.pval)
-} else {
-  results %<>% filter(!is.na(Score.pval))
-  gg_qqplot(results$Score.pval)
-}
-dev.off()
 
 

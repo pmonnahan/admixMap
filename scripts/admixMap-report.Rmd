@@ -1,5 +1,5 @@
 ---
-title: "Ancestry Inference Report"
+title: "Admixture & Association Mapping Report"
 author: Patrick Monnahan
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
@@ -8,11 +8,18 @@ output:
       in_header: header.tex
 params:
   genesis_rslt: NA
+  input_directory: NA
   blink_rslt: NA
   admixMap_rslt: NA
+  ancestry_comps: NA
+  global_ancestry: NA
+  gwas_threshold: NA
   fam_file: NA
+  gen_since_admix: NA
+  sHWE_markers: NA
   stats_file: NA
   pruned_bim: NA
+  sHWE_entropy: NA
   rulegraph_file: NA
   config_file: NA
 ---
@@ -20,6 +27,37 @@ params:
 ```{r setup, include=FALSE}
 knitr::opts_knit$set(root.dir=normalizePath('../'))
 knitr::opts_chunk$set(echo = FALSE, fig.height = 6, fig.width = 6, fig.align = 'center', fig.pos = 'H')
+# A Prefix nulling hook.
+
+# Make sure to keep the default for normal processing.
+default_output_hook <- knitr::knit_hooks$get("output")
+
+# Output hooks handle normal R console output.
+knitr::knit_hooks$set( output = function(x, options) {
+
+  comment <- knitr::opts_current$get("comment")
+  if( is.na(comment) ) comment <- ""
+  can_null <- grepl( paste0( comment, "\\s*\\[\\d?\\]" ),
+                     x, perl = TRUE)
+  do_null <- isTRUE( knitr::opts_current$get("null_prefix") )
+  if( can_null && do_null ) {
+    # By default R print output aligns at the right brace.
+    align_index <- regexpr( "\\]", x )[1] - 1
+    # Two cases: start or newline
+    re <- paste0( "^.{", align_index, "}\\]")
+    rep <- comment
+    x <- gsub( re, rep,  x )
+    re <- paste0( "\\\n.{", align_index, "}\\]")
+    rep <- paste0( "\n", comment )
+    x <- gsub( re, rep,  x )
+  }
+
+  default_output_hook( x, options )
+
+})
+
+knitr::opts_template$set("kill_prefix"=list(comment=NA, null_prefix=TRUE))
+knitr::opts_chunk$set(opts.label="kill_prefix")
 ```
 
 ```{r dependencies, include=FALSE}
@@ -35,13 +73,13 @@ library("foreach")
 library("forcats")
 library("ggridges")
 library("GWASTools")
+library("STEAM")
 ```
 
 ```{r, include=FALSE}
 #Load functions
-gg_qqplot <- function(ps, ci = 0.95) {
+gg_qqplot <- function(ps, title, ci = 0.95) {
   n  <- length(ps)
-    print(n)
   df <- data.frame(
     observed = -log10(sort(ps)),
     expected = -log10(ppoints(n)),
@@ -60,8 +98,9 @@ gg_qqplot <- function(ps, ci = 0.95) {
     # geom_line(aes(expected, cupper), linetype = 2, size = 0.5) +
     # geom_line(aes(expected, clower), linetype = 2, size = 0.5) +
     xlab(log10Pe) +
-    ylab(log10Po)
+    ylab(log10Po) + ggtitle(title)
 }
+
 ```
 
 
@@ -75,99 +114,298 @@ cases = fam %>% filter(V6==2) %>% select(V2) %>% mutate(V1=V2) %>% select(V1)
 rulegraph_file <- params$rulegraph_file
 yaml <- read_yaml(params$config_file)
 
-gen = read.table(params$genesis_rslt, head = T)
-blink = read.table(params$blink_rslt, head = T)
-adm = read.table(params$admixMap_rslt, head = T)
-pbim = read.table(params$pruned_bim, head=T)
+gen = read.table(params$genesis_rslt, header = T)
+blink = read.table(params$blink_rslt, header = T)
+if (params$admixMap_rslt != "-9"){
+  adm = read.table(params$admixMap_rslt, header = T)
+}
+pbim = read.table(params$pruned_bim)
+anc = read.table(params$global_ancestry, header=T)
+Gens = as.numeric(params$gen_since_admix)
 
+ancpre = strsplit(params$ancestry_comps, ",")[[1]]
 
+gwas_thresh = as.numeric(params$gwas_threshold)
+
+ent = read.table(params$sHWE_entropy)
+shwe = read.table(params$sHWE_markers)
+
+outPre = str_split(params$blink_rslt, "[.]")[[1]][1]
 
 ```
 
+# Summary
 
-This report summarizes relevant information of the input, output, and intermediate steps of a pipeline (\href{https://github.com/pmonnahan/admixMap}{{\color{blue}{\underline{Github repo}}}}) which performs both admixture and association mapping.  
+This report summarizes relevant information of the input, output, and intermediate steps of a pipeline (\href{https://github.com/pmonnahan/admixMap}{{\color{blue}{\underline{Github repo}}}}) which performs both admixture and association mapping.  Prior to mapping, input data is parsed and QC'ed to identify (and optionally filter) related samples, calculate principal components, and perform genomic control matching.  
 
-\href{http://zzlab.net/blink/}{{\color{blue}{\underline{BLINK}}}} 
+## Genome Wide Association Mapping (GWAS)
+GWAS is performed via two softwares: \href{http://zzlab.net/blink/}{{\color{blue}{\underline{BLINK}}}} and \href{https://github.com/UW-GAC/GENESIS}{{\color{blue}{\underline{GENESIS}}}}.  BLINK implements a novel multi-locus methodology that is fast, capable of handling large datasets, and claims greater statistical power.  However, the program is incapable of generating coefficient estimates necessary for calculating odds ratios, polygenic risk scores, etc.  GENESIS scales poorly with sample size, but is well-documented, written in R (and thus more transparent), and provides much more detailed output.
 
-\href{https://github.com/UW-GAC/GENESIS}{{\color{blue}{\underline{GENESIS}}}}, 
-
-With the RFMix output, admixture Mapping (i.e. associating local ancestry with phenotype) is performed using a custom Rscript.
-
-The results presented here were generated using the following dataset as input:
+The following plink file were used as the initial input for the GWAS portion of this pipeline:
 
 ```{r input-datasets}
+knitr::opts_chunk$set(opts.label="kill_prefix")
 yaml$query
 ```
 
-and the pipeline was carried out using the following singularity image:
-```{r singularity-image}
-yaml$singularity$image
+## Admixture Mapping
+For the admixture mapping, this pipeline takes, as input, the output of the \href{https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3738819/}{{\color{blue}{\underline{RFMix}}}} ancestry inference program. The model used for admixture mapping is taken from (\href{https://www.cell.com/ajhg/pdfExtended/S0002-9297(19)30008-4}{{\color{blue}{\underline{Grinde et al 2019}}}}).  In short, for every genomic window a general linear model (generalized, in the case of case/control phenotypes) is fit with the local ancestry state as the predictor variable with global ancestry (or admixture proportions) as a covariate.  For every ancestry of interest, a separate model is fit, which corresponded to the following ancestries, in this case:
+
+```{r ancestries}
+yaml$ancestry_predictors
 ```
+
+The following additional covariates were also included:
+
+```{r covars}
+yaml$other_predictors
+```
+
+The RFMix results used for admixture mapping were taken from:
+```{r rfmix-results}
+yaml$admixMapping$rfmix
+```
+
+And, the raw output of the \href{https://github.com/pmonnahan/admixMap/blob/master/scripts/admixMap2.R}{{\color{blue}{\underline{admixture mapping script}}}} can be found here:
+```{r admixmap-results}
+paste(getwd(), params$admixMap_rslt, sep="/")
+```
+
+The \href{https://www.cell.com/ajhg/pdfExtended/S0002-9297(19)30008-4}{{\color{blue}{\underline{Grinde et al 2019}}}} paper also provides a framework and software (called \href{https://github.com/kegrinde/STEAM}{{\color{blue}{\underline{STEAM}}}}) for determining an appropriate significance threshold for multiple test correction. It is based on the genetic positions of the tested windows, the average ancestry of each individual, and the number of generations since admixture began.  Using the window positions in the output listed above, the global ancestries found here
+
+```{r global-ancestry}
+paste(getwd(), params$global_ancestry, sep="/")
+```
+
+and assuming admixture began 
+
+```{r gen_since_admix}
+params$gen_since_admix
+```
+generations ago, the software determined the following 5% significance threshold 
+
+### Significance Threshold
+```{r admixMap-sig-thresh, warning=FALSE, message=FALSE}
+
+if (params$admixMap_rslt != "-9"){
+  dat = adm %>% mutate(cM = (sgpos + egpos) / 2, chr = chm) %>% distinct(cM, chr) 
+  anc2 = anc %>% select(-sample)
+
+  thresh = get_thresh_simstat(g = Gens, map = dat, props = anc2, nreps = 1000)
+  print(thresh$threshold)
+  adm_thresh = thresh$threshold
+  
+  adm %>% filter(ANC.p.value < thresh$threshold) %>% write.table(paste0(outPre,".admixmap.sig.txt"), row.names = F, quote=F)
+}
+```
+
+
+# Quality Control
+The first step in the pipeline is to subset the input PLINK files (and admixture mapping input) listed above with an optionally provided list from the user.  
+
+Sample file:
+```{r sample-file}
+yaml$samples
+```
+
+Then, the PLINK files are run through a series of of QC steps in order to prepare the data for calculation of PCs.  The first step is to isolate the control subjects and prune markers showing high amounts of linkage disequilibrium (based on _r^2^_) in the controls.  
+
+The parameters used for LD pruning in PLINK were:
+```{r LD-pruning-params}
+yaml$LD_pruning
+```
+
+PLINK is then used to calculate Identity by Descent (IBD) for each pair of control samples, and individuals are removed such that no two individuals remain with a 'PI_HAT' value above:
+```{r IBD-thresh}
+yaml$IBD$pi_hat
+```
+
+## Structured Hardy-Weinberg Filter
+The sHWE (\href{https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6827367/}{{\color{blue}{\underline{structured Hardy-Weinberg equilibrium}}}}) method facilitates testing of HWE when a dataset contains multiple, genetically-structured populations.  However, there are two substantial limitations to this approach.  First, it requires the user to specify the number of populations in the dataset.  Since this is generally an unknown parameter, the authors suggest calculating p-values under a range of population numbers and then using the maximum entropy of the p-value distribution as criteria for finding the optimal population number.  The entropy is calculated over all bins of the p-value distribution excluding the left-most bin which contains the true SNPs violating HWE.  The remainder of this distribution should be uniform if the population parameter is accurate.  Entropy increases as the distribution becomes more uniform, so max entropy is used as the criteria.
+
+Entropy values were calculated from p-value distributions generated assuming the following range of population number:
+
+```{r sHWE-entropy, fig.height = 4, fig.width = 4, fig.cap = "Entropy of p-value distributions (excluding the first bin) for varying population number", warning=FALSE, message=FALSE}
+ent %>% ggplot(aes(x=V1,y=V2)) + geom_point() + geom_line() + xlab("Number of Populations") + ylab("Entropy")
+```
+
+The population value with the maximum entropy is:
+```{r sHWE-opt-pop}
+ent %>% filter(V2==max(ent$V2)) %>% select(V1)
+```
+
+
+The other main limitation to the program is that it does not allow any missing data at a marker.  Since markers with no missing data could represent a biased subset of the genotype data, the pipeline performs a large series of downsampling iterations (with user-specified parameters) with the hope that, by random chance, a subset of the markers with missing data in the full dataset will have no missing data in the downsampled dataset(s).  
+
+In this case, the pipeline generated:
+```{r sHWE-downsampling-rounds}
+yaml$sHWE$downsample_rounds
+```
+
+downsampled datasets, each containing:
+
+```{r sHWE-downsampling-inds}
+yaml$sHWE$downsample_number
+```
+individuals.  
+
+Using lower numbers of individuals in each downsampled subset will increase the likelihood that any one marker will have complete genotype information, but going too low will not provide a reliable sample of the larger control population.  It is recommended that the user decide on an acceptable downsample size and increase the number of downsampling rounds until the desired number or proportion of markers are tested.
+
+The minimum number of tested markers requested was:
+```{r sHWE-minimum-tests}
+yaml$sHWE$test_threshold
+```
+
+, and the realized number of tested markers was:
+```{r sHWE-realized-tests}
+nrow(shwe)
+```
+
+
+# Population structure and Kinship
+
+Plot eigenvalues
 
 Todo:
 post-subset sample size summary 
-LD prune summary
--filtered down to controls only
--threshold
 
 sHWE
 -number of unrelated controls
--optimal population number
---include plot of entropy vs pop number?
--number of SNPs tested
 
 control matching
 
 admixMap summary
 
-## Q-Q plots
+# Results
+
+## GWAS
+
+```{r, warning=FALSE, message=FALSE}
+#Output significant SNPs
+blink %>% filter(p_value <= gwas_thresh) %>% write.table(paste0(outPre,".blink.sig.txt"), row.names = F, quote=F)
+gen %>% filter(SPA.pval <= gwas_thresh) %>% write.table(paste0(outPre,".genesis.sig.txt"), row.names = F, quote=F)
+```
 
 ### GENESIS
-```{r}
-gen %>% sample_n(500000) %>% filter(!is.na(Score.pval)) %.>% qqPlot(.$Score.pval) 
+Implementation of the GENESIS software generally followed the provided \href{https://www.bioconductor.org/packages/release/bioc/vignettes/GENESIS/inst/doc/assoc_test.html}{{\color{blue}{\underline{vignette}}}}.  In brief, the LD-pruned SNPs explained above are first used to calculate a first-pass kinship matrix via \href{http://people.virginia.edu/~wc9c/KING/manual.html}{{\color{blue}{\underline{KING}}}}, which is designed to be robust in the face of population structure.  Then, these kinship estimates along with the LD-pruned SNPs are used to calculate ancestry-informative PCs via \href{https://rdrr.io/bioc/GENESIS/man/pcair.html}{{\color{blue}{\underline{PC-AiR}}}}. The basic idea behind PC-AiR is to calculate PCs using only unrelated individuals and then use the resulting eigenvectors/values to project PC values for the related individuals that had been excluded. These PCs are formatted and combined with the phenotype and covariate data, all of which is available here:
+
+```{r genesis-pdat}
+paste(getwd(), str_replace(params$genesis_rslt,"txt","pdat"), sep="/")
 ```
 
-### BLINK
-```{r}
-blink %>% sample_n(500000) %>% filter(!is.na(p_value)) %.>% qqPlot(.$p_value) 
+Finally, a genetic-relatedness matrix is calculated via \href{https://www.rdocumentation.org/packages/GENESIS/versions/2.2.2/topics/pcrelate}{{\color{blue}{\underline{PC-Relate}}}}, which 'accounts for population structure (ancestry) among sample individuals through the use of ancestry representative principal components (PCs)'. 
+
+For the GWAS, the following number of PCs from PC-AiR were used to control for population structure:
+```{r pc-num}
+yaml$gwas$pc_num
+```
+and the genetic-relatedness matrix was used for the error-covariance matrix.
+
+The raw output of the GENESIS GWAS can be found here:
+```{r genesis-output}
+paste(getwd(), params$genesis_rslt, sep = "/")
+```
+and the meaning of each column name can be found \href{https://rdrr.io/bioc/GENESIS/man/assocTestSingle.html}{{\color{blue}{\underline{here}}}}
+
+SNPs with p-values below the following thresholds were annotated via \href{http://snpeff.sourceforge.net/SnpEff_manual.html}{{\color{blue}{\underline{SnpEff}}}}:
+```{r gen-sig-thresh}
+yaml$gwas$sig_threshold
 ```
 
-
-## Inflation Factors
-```{r}
-gen %>% filter(variant.id %in% pbim$V2) %>% mutate(chisq = Score.stat ^ 2) %>% select(chisq) %.>% median(., na.rm=T) / 0.455  
+and output to:
+```{r genesis-annt-snps}
+paste(getwd(), str_replace(params$genesis_rslt, "txt", "annt.txt"), sep = "/")
 ```
 
-Import marker names from LD-pruned, sHWE filtered dataset.  Find median of these TEST STATISTICS and divide by 0.455
+```{r, fig.height = 4, fig.width = 4, fig.cap = "Quantile-Quantile (QQ) plot for a random sample of (500k) p-values resulting from the GENESIS GWAS", warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(dev = 'png')
+gen %>% sample_n(500000) %>% filter(!is.na(SPA.pval)) %.>% gg_qqplot(.$SPA.pval, "") 
+```
 
-## Manhattan plots
+and a corresponding Genomic Inflation Factor (GIF) of:
+```{r genesis-inflation-factor}
+gen %>% filter(variant.id %in% pbim$V2) %>% mutate(chisq = Score.Stat ^ 2) %>% select(chisq) %.>% median(.$chisq, na.rm=T) / 0.456
+```
+A GIF near of 1 indicates absence of p-value inflation due to population structure, and a value < 1.1 is generally considered acceptable.  This GIF is based on the test statistics of the LD-pruned SNPs and \href{http://rstudio-pubs-static.s3.amazonaws.com/9743_8a5f7ba3aa724d4b8270c621fdf6d06e.html}{{\color{blue}{\underline{calculated}}}} by dividing the median of the squared test statistics by 0.456.  
 
-### GENESIS
-```{r}
-manhattanPlot(gen$Score.pval, gen$chr)
+```{r, fig.height = 5, fig.width = 7, fig.cap = "Manhattan plot of log(10) of p-values produced from the GENESIS program", warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(dev = 'png')
+manhattanPlot(gen$SPA.pval, gen$chr)
 ```
 
 ```{r, include=F}
-png("genesis.mnht.png")
-manhattanPlot(gen$Score.pval, gen$chr)
+png("figures/genesis.mnht.png")
+manhattanPlot(gen$SPA.pval, gen$chr)
 dev.off()
 ```
 
-
 ### BLINK
-```{r}
+BLINK (Bayesian-information and Linkage-disequilibrium Iteratively Nested Keyway) takes a substantially different approach to GWAS than GENESIS.  As opposed to GENESIS, which tests a single marker at a time, the BLINK procedure is inherently multi-locus, using Bayesian information criteria to determine which loci to include in the model.  Via this model selection process, it eliminates the need to estimate random effects related to kinship. Population structure is corrected for via PCs calculated by PLINK, using the following number of PCs:
+
+```{r pc-num}
+yaml$gwas$pc_num
+```
+
+PLINK was used to calculate PCs because using the PCs from PC-AiR described above resulted in inflation of p-values according to QQ plots.  
+
+The raw output for BLINK were output to:
+```{r blink-output}
+paste(getwd(), params$blink_rslt, sep="/")
+```
+
+SNPs with p-values below the following thresholds were annotated via \href{http://snpeff.sourceforge.net/SnpEff_manual.html}{{\color{blue}{\underline{SnpEff}}}}:
+```{r blink-sig-thresh}
+yaml$gwas$sig_threshold
+```
+
+and output to:
+```{r blink-annt-snps}
+paste(getwd(), str_replace(params$blink_rslt, "txt","annt.txt"), sep="/")
+```
+
+```{r, fig.height = 4, fig.width = 4, fig.cap = "Quantile-Quantile (QQ) plot for a random sample of (500k) p-values resulting from the BLINK GWAS", warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(dev = 'png')
+blink %>% sample_n(500000) %>% filter(!is.na(p_value)) %.>% gg_qqplot(.$p_value, "") 
+```
+Note: Since BLINK does not output any type of test statistic (which serves as the basis of the Inflation Factor), it is not possible to calculate the GIF.
+
+```{r, fig.height = 5, fig.width = 7, fig.cap = "Manhattan plot of log(10) of p-values produced from the BLINK program", warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(dev = 'png')
 manhattanPlot(blink$p_value, blink$chr)
+```
+
+```{r, include=F}
+png("figures/blink.mnht.png")
+manhattanPlot(blink$p_value, blink$chr)
+dev.off()
+```
+
+## Admixture Mapping
+
+```{r, fig.height = 4, fig.width = 4, fig.cap = "Quantile-Quantile (QQ) plot for a random sample of (500k) p-values for an effect of local ancestry", warning=FALSE, message=FALSE}
+for (i in 1:length(ancpre)){
+  adm %>% filter(anc==ancpre[i] & !is.na(ANC.p.value)) %.>% print(gg_qqplot(.$ANC.p.value, ancpre[i]))
+}
+```
+
+```{r, fig.height = 4, fig.width = 7, fig.cap = "Manhattan plot of log(10) of p-values produced from the BLINK program", warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(dev = 'png')
+for (i in 1:length(ancpre)){
+  print(ancpre[i])
+  adm %>% filter(anc==ancpre[i] & !is.na(ANC.p.value)) %>% mutate(Chr = as.numeric(chm)) %>% arrange(Chr) %.>% manhattanPlot(.$ANC.p.value, .$chm, signif = adm_thresh)
+}
 ```
 
 
 ```{r, include=F}
-png("blink.mnht.png")
-manhattanPlot(blink$p_value, blink$chr)
-dev.off()
+for (i in 1:length(ancpre)){
+  png(paste0("figures/admixMap.",ancpre[i], ".mnht.png"))
+  adm %>% filter(anc==ancpre[i] & !is.na(ANC.p.value)) %.>% manhattanPlot(.$ANC.p.value, .$chm, signif = adm_thresh)
+  dev.off()
+}
 ```
 
 
-chrom plots
 ```{r}
 # for (i = 1:22){
 #   png()
@@ -178,8 +416,24 @@ chrom plots
 ```
 
 
-output list of snps exceeding 5-8
-```{r}
+
+
+
+```{r rfmix-chrom.plots, include=FALSE}
+# Consider adding centromere locations
+if (adm != "-9"){
+  files = list.files(params$input_directory, pattern = ".dat")
+  for (f in 1:length(files)){
+    in_name = paste(params$input_directory, files[f], sep = "/")
+    chrom = str_split(files[f], '[.]')[[1]][[1]]
+    # print(in_name)
+    dat = read.table(in_name, header = T)
+    png(paste0("figures/chrom_plots/",chrom,".png"))
+    plt = dat %>% mutate(pos = (spos + epos) / 2) %>% select(c("pos","pheno", ancpre)) %>% pivot_longer(-c(pos,pheno), names_to="Ancestry") %>% group_by(pos,pheno,Ancestry) %>% summarize(Tot = sum(value)) %>% mutate(prop = Tot / sum(Tot)) %>% ggplot(aes(x = pos / 1000000, y = prop, linetype=as.character(pheno), color = Ancestry)) + geom_line() + xlab("Position (Mb)") + ylab("Proportion of Haplotypes") + scale_linetype_discrete(name = "Phenotype", breaks = c(0,1), labels = c("Control", "Case"))
+    print(plt)
+    dev.off()
+  }
+}
 
 ```
 
@@ -232,87 +486,6 @@ The results in this supplementary were generated in the following R environment:
 sessionInfo()
 ```
 \normalsize
-
-
-###OLD
-### Reference population summary
-The reference VCF that was used for phasing as well as for ancestry inference is:
-
-```{r ref-VCF}
-yaml$reference$vcf
-```
-
-which was subset to include all individuals belonging to the following populations:
-
-```{r ref-pops, fig.cap="Counts of reference individuals from each subpopulation labelled by the SuperPopulation used for Ancestry Inference"}
-samp %>% count(SuperPop,SubPop) %>% knitr::kable()
-# yaml$rfmix %>% as.data.frame() %>% mutate(Pop.Name = ref_pops, SuperPop = pop_names) %>% select(Pop.Name, SuperPop) %>% pivot_longer(c(Pop.Name, SuperPop)) %>% separate(value,into = paste("V",1:length(str_split(yaml$rfmix$pop_names, ",")[[1]]), sep="_"), ",")
-```
-
-For ancestry inference in RFMix, subpopulation labels were replaced with SuperPopulations, and admixture is modelled between these superpopulations.  RFMix will sample randomly from within these superpopulations to generate the training/test sets needed for the machine learning algorithm.  It is best if the reference individuals from a superpopulation are evenly distributed across subpopulations, so that a single subpopulation does not dominate during the resampling.  
-
-### RFMix process summary
-
-RFMix outputs a number of files into the 'rfmix' subdirectory that was produced by this pipeline.  The most relevant files are those ending in '.Q', which contain the global ancestry percentage estimates for each individual, and the files ending in '.msp.tsv', which contain the maximum-likelihood ancestry state in each window analyzed (i.e. local ancestry).  The .Q files can be easily filtered to isolate individuals of a given ethnicity, based on user-provided thresholds.  
-
-Admixture between the superpopulations is assumed to have begun:
-```{r rfmix-gens}
-yaml$rfmix$generations
-```
-generations ago.
-
-If the following flag is set to "true", then the reference populations were assumed to be admixed as well, invoking an iterative procedure in RFMix to update haplotype information in the reference populations.
-```{r rfmix-reanalyze}
-yaml$rfmix$reanalyze_reference
-```
-
-The following figures and table are based on the global ancestry (taken from .Q files).  A .Q file is given for each chromosome, and the values here represent the average value across chromosomes for an individual.  
-```{r rfmix-global.anc.dist, fig.height = 4, fig.width = 4, fig.cap = "Density plots of individuals' inferred global ancestry", warning=FALSE, message=FALSE}
-g.anc %>% pivot_longer(2:ncol(g.anc), names_to = "Ancestry", values_to = "Prop.Anc") %>% mutate(case = case_when(sample %in% cases$V1 ~ "case", TRUE ~ "control")) %>% ggplot(aes(x = Prop.Anc * 100, y = Ancestry, fill = case)) + geom_density_ridges(alpha = 0.5) + xlab("Percent Ancestry") + ylab("Ancestry Component") + scale_fill_discrete(name="")
-```
-
-
-```{r rfmix-global.anc.hist, fig.height = 4, fig.width = 4, fig.cap = "Histogram of individuals' inferred global ancestry", warning=FALSE, message=FALSE}
-g.anc %>% pivot_longer(2:ncol(g.anc), names_to = "Ancestry", values_to = "Prop.Anc") %>% mutate(case = case_when(sample %in% cases$V1 ~ "case", TRUE ~ "control")) %>% ggplot(aes(x = Prop.Anc * 100, fill = case)) + geom_histogram(position=position_dodge()) + facet_grid(~Ancestry) + xlab("Percent Ancestry") + scale_fill_discrete(name="")
-```
-
-
-```{r rfmix-global.anc.tab, fig.cap = "Summary table of global ancestry"}
-g.anc %>% pivot_longer(2:ncol(g.anc), names_to = "Ancestry", values_to = "Prop.Anc") %>% mutate(case = case_when(sample %in% cases$V1 ~ "case", TRUE ~ "control")) %>% group_by(case, Ancestry) %>% summarise(mean = mean(Prop.Anc), median = median(Prop.Anc)) %>% knitr::kable()
-```
-
-\newpage 
-
-
-```{r rfmix-chrom.plots, include=FALSE}
-# Consider adding centromere locations
-files = list.files(rfmix_dir, pattern = ".msp.tsv")
-for (f in 1:length(files)){
-  in_name = paste(rfmix_dir, files[f], sep = "/")
-  chrom = str_split(files[f], '[.]')[[1]][[2]]
-  # print(in_name)
-  q1 = readMSP(in_name, cases)
-  png(paste0("chrom_plots/",chrom,".png"))
-  plt = q1 %>% ggplot(aes(x = mpos / 1000000, y = Prop * 100, color = Pop, linetype=case)) + geom_line() + ggtitle(chrom) + ylab("Mean Ancestry Percentage") + xlab("Position (Mb)")
-  print(plt)
-  dev.off()
-  }
-```
-
-A good initial check that the results are sensical is to simply look at the average local ancestry along a chromosome.  These estimates should remain fairly stable.  Any large, sudden changes in the dominant ancestral component are indicative of issues in phasing or ancestry inference.  Furthermore, these chromosome plots should be inspected to identify areas of suspect inference.  For example, drastic changes in average ancestry is often observed near centromeres or telomeres.  These can also likely be flagged by low SNP counts in the inferred windows (which is reported in the .msp.tsv. files).  A full collection of these images (one for each chromosome) should have been created and output into the 'chrom_plots' folder within the master run directory.  
-```{r rfmix-chrom.plot.incl, warning=FALSE, message=FALSE}
-# Consider adding centromere locations
-CHROM = "chr12"
-files = list.files(rfmix_dir, pattern = ".msp.tsv")
-for (f in 1:length(files)){
-  in_name = paste(rfmix_dir, files[f], sep = "/")
-  chrom = str_split(files[f], '[.]')[[1]][[2]]
-  if (chrom==CHROM){
-  plt = ggplot(readMSP(in_name, cases), aes(x = mpos / 1000000, y = Prop * 100, color = Pop, linetype=case)) + geom_line() + ggtitle(chrom) + ylab("Mean Ancestry Percentage") + xlab("Position (Mb)")
-  print(plt)
-  }
-  }
-```
 
 
 
