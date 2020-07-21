@@ -17,13 +17,13 @@ LD_pruning:
   step_size: "5"
   r2_threshold: "0.3"
 sHWE:
-  pop_nums: '1,2,3,4,5,6,7,8' # From these choices, the pipeline will try to find the optimal number of populations to use in latent factor analysis used in the structured HWE procedure
+  pop_nums: '1,2,3,4,5,6' # From these choices, the pipeline will try to find the optimal number of populations to use in latent factor analysis used in the structured HWE procedure
   threshold: '0.000001' # p-value threshold for filtering based on departure from sHWE
   bins: '30'
   downsample_rounds: '2000'
   downsample_number: '1000'
   maf: '0.05'
-  test_threshold: '100000'
+  test_threshold: '500000'
 IBD:
   cpj: '100000' # number of comparisons per job for IBS calculation
   pi_hat: '0.125'

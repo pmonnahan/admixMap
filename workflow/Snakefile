@@ -2,7 +2,6 @@
 import glob
 import os
 import math
-import subprocess
 import pdb
 import shutil
 import pandas as pd
@@ -71,8 +70,6 @@ def get_all_inputs(wildcards):
                   f"accessory/samples.txt", f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.genome.gz",
                   f"{BASE}.blink.txt", f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf", f"{BASE}.genesis.sig.annt.txt", f"{BASE}.blink.sig.annt.txt"]
     if config['admixMapping']['skip'] != 'true': input_list.append(f"{BASE}.admixmap.txt")
-    # input_list += expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs + 1))
-    # input_list += expand(f"sHWE/{BASE}_sHWE_{{k}}", k=config['sHWE']['pop_nums'].split(","))
     return(input_list)
 
 def get_cM_inputs(wildcards):
@@ -91,6 +88,14 @@ def get_report_input(wildcards):
     input_list = [f"{BASE}.blink.txt", f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt"]
     if config['admixMapping']['skip'] != 'true': input_list.append(f"{BASE}.admixmap.txt")
     return(input_list)
+
+def get_conditional_analysis_input(wildcards):
+    inputList = []
+    with open(config['conditional_analysis']['snp_list'],'r') as snp_list: # One column with snpIDs
+        for line in snp_list:
+            marker = line.strip().replace(":", "-")
+            inputList.append(f"conditional-analysis/{BASE}-{marker}.genesis.txt")
+    return(inputList)
 
 rule all:
     input: get_all_inputs
@@ -117,8 +122,7 @@ rule subset_individuals:
         else:
             print("If 'sample' is not set to 'all' in the config.yml file, then user must specify a valid (PLINK-format; FID IID) text file for subsetting individuals")
 
-# TODO: provide list of SNPs to keep regardless of filters?
-rule LD_prune: #Not tested...I'm not sure exclude option will work
+rule LD_prune:
     input: f"plink/{BASE}_sub.bed"
     output: f"plink/{BASE}_LDprune_ctrls.bed", f"plink/{BASE}_LDprune.bed", f"plink/{BASE}.LDkeep.prune.in"
     params:
@@ -174,7 +178,6 @@ rule downsample_controls:
         shell(f"{CMD_PREFIX} shuf -n {config['sHWE']['downsample_number']} plink/{BASE}_LDp_ctrls_IBDflt.fam > plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt")
         shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_ctrls_IBDflt --keep plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt --maf {config['sHWE']['maf']} --geno 0.0 --keep-allele-order --make-bed --out plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}")
 
-#TODO finish check_marker_coverage
 rule check_marker_coverage:
     input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
     output: "accessory/sHWE_tested_snps.txt", "accessory/.sHWE_pass.txt"
@@ -188,13 +191,11 @@ rule check_marker_coverage:
         else:
             shell('touch accessory/.sHWE_pass.txt')
 
-# First run with 100 said that best d value was 7 whereas run with 1000 individuals said best d was 5.  How to know
 rule optimize_sHWE:
     input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))]), "accessory/.sHWE_pass.txt"
     output: f"sHWE/{BASE}_sHWE_{{d}}"
     shell:
         f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS0 -d {{wildcards.d}} -o sHWE/{BASE}_sHWE_{{wildcards.d}}"
-
 
 rule extract_optimum_popnum:
     input: expand(f"sHWE/{BASE}_sHWE_{{d}}", d=config['sHWE']['pop_nums'].split(","))
@@ -217,24 +218,17 @@ rule extract_optimum_popnum:
         assert(max_entropy != -9 and best_popnum != -9)
         with open("sHWE/.optimum_popnum.txt", 'w') as outfile: outfile.write(str(best_popnum))
 
-
 rule structHWE:
     input: "sHWE/entropy.txt", f"sHWE/.optimum_popnum.txt", expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
     output: f"sHWE/{BASE}_sHWE-DS{{f}}", f"sHWE/{BASE}_sHWE-DS{{f}}.rmv.bim"
     params:
         threshold = config['sHWE']['threshold']
     run:
-        # Then, run sHWE on remaining downsampled datasets using the optimal k value
         popfile = open(f"sHWE/.optimum_popnum.txt", 'r')
         popnum = popfile.readline()
         popfile.close()
-        # Before doing this, check to see how many of original snps we have tested?
-        ### STOP HERE.  PUT IN CATCH FOR IF TOO FEW SNPS ARE BEING CAPTURED BY DOWNSAMPLED DATA SET
-        # f"zcat plink/DS/{BASE}_LDprune_ctrls_DS{{wildcard.round}}.bim | sort | uniq | diff - plink/{BASE}_LDprune_ctrls"
         shell(f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.f}} -d {popnum} -t {{params.threshold}} -o sHWE/{BASE}_sHWE-DS{{wildcards.f}}")
 
-# Still need to look above at HOW MANY SNPS WILL BE CAPTURED BY OVERLAP.
-# Or if we just complete this, we can run process multiple times till just past this step and compare list that are filtered.
 rule filter_sHWE_SNPs:
     input: expand(f"sHWE/{BASE}_sHWE-DS{{f}}", f = range(0,int(config['sHWE']['downsample_rounds']))), expand(f"sHWE/{BASE}_sHWE-DS{{f}}.rmv.bim", f = range(0,int(config['sHWE']['downsample_rounds'])))
     output: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}_LDp_sHWE.bim"
@@ -242,7 +236,6 @@ rule filter_sHWE_SNPs:
     shell:
             f"cat {{input[1]}} | sort | uniq > sHWE/sHWE.rmvd.snps.bim; "
             f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/sHWE.rmvd.snps.bim --keep-allele-order --make-bed --maf {{params.maf}} --out plink/{BASE}_LDp_sHWE"
-
 
 rule IBD_filter:
     input: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}.genome.gz"
@@ -286,7 +279,6 @@ rule get_globalAncestry:
 rule admixMap_dataPrep:
     input: get_dataprep_input
     output: f"input/{BASE}_chr{{CHROM}}.admixMap.dat"
-    ## Add related filtering plink command just here prior to prepping data
     shell: f"grep -v -f accessory/excluded_related_samples.txt accessory/samples.txt > accessory/samples_admixMap.txt; {CMD_PREFIX} Rscript {CODE}/admixMunge.R -d {{input[2]}} -g {{input[1]}} -s accessory/samples_admixMap.txt -f input/{BASE}_CtlMat.fam -o {{output}}"
 
 rule admixMap:
@@ -319,7 +311,7 @@ rule genesis_GWAS:
         shell(cmd)
 
 rule blink_convert:
-    input: f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.eigenvec", #f"{BASE}.pcrelate.txt"
+    input: f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.eigenvec"
     output: f"BLINK/{BASE}_CtlMat.pos"
     run:
         with open('scripts/blink_convert.sh', 'w') as temp_sh:
@@ -342,13 +334,11 @@ rule blink_GWAS:
         shell(f"{CMD_PREFIX} sh scripts/blink_gwas.sh")
 
 #TODO: Finish make_report for admixMap
-# Included in
 rule make_report:
     input: get_report_input
     output: f"{BASE}-Mapping-report.pdf", f"{BASE}.admixmap.sig.txt", f"{BASE}.genesis.sig.txt", f"{BASE}.blink.sig.txt"
     run:
         with open("scripts/gather_report_data.sh", 'w') as report_cmds:
-        #     report_cmds.write(f"bcftools query -l {REFBCF} | grep -f - accessory/Population_Map_File.txt > accessory/realized_ref_samples.txt\n")
             report_line = f"echo \'rmarkdown::render(\"scripts/admixMap-report.Rmd\", output_file=\"{BASE}-Mapping-report.pdf\", " \
                           f"params=list(genesis_rslt=\"{BASE}.genesis.txt\", " \
                           f"blink_rslt=\"{BASE}.blink.txt\", " \
@@ -368,7 +358,6 @@ rule make_report:
             report_line += f"config_file=\"workflow/config.yml\"))\' | R --vanilla"
             report_cmds.write(report_line)
         shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf; mv *kinplot figures")
-        # shell(f"touch {BASE}-Mapping-report.pdf")
 
 rule annotate_snps: # get genotype frequencies from VCF
     input: f"{BASE}.genesis.sig.txt", f"{BASE}.blink.sig.txt"
@@ -386,10 +375,29 @@ rule annotate_snps: # get genotype frequencies from VCF
         shell(f"{CMD_PREFIX} Rscript {CODE}/merge_annt.R -i {BASE}.blink.txt -s {BASE}.blink.sig.preannt.txt -r {config['annotation']['rsIDs']} -f {BASE}.blink.sig.frq.cc -o {BASE}.blink.sig.annt.txt")
         shell(f"{CMD_PREFIX} Rscript {CODE}/merge_annt.R -i {BASE}.genesis.txt -s {BASE}.genesis.sig.preannt.txt -r {config['annotation']['rsIDs']} -f {BASE}.gen.sig.frq.cc -o {BASE}.genesis.sig.annt.txt")
 
-# rule conditional_analysis:
-#     input: 'snp_list'
-#     output: 'output.txt'
-#     run:
-#         loop over positions in snp_list
-#         extract genotype info and recode with additive encoding
-#         pass this to Rscript that will subset gds and do cond analysis
+rule conditional_analysis:
+    input: f"{BASE}.genesis.gds", f"{BASE}.genesis.pdat", f"{BASE}.genesis.grm.gds"
+    output: f'conditional-analysis/{BASE}-{{marker}}.genesis.txt'
+    run:
+        if os.path.exists(config['conditional_analysis']['snp_list']):
+            if not os.path.exists('conditional-analysis'): os.mkdir('conditional-analysis')
+            chrom, pos = f"{wildcards.marker}".split("-")
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --snp {wildcards.marker.replace('-',':')} --recodeAD --out conditional-analysis/{wildcards.marker} || true")
+            if os.path.exists(f"conditional-analysis/{wildcards.marker}.raw"):
+                shell(f"{CMD_PREFIX} Rscript {CODE}/genesis_conditional_analysis.R -a {chrom} -b {pos} -d {config['conditional_analysis']['distance']} "
+                      f"-m conditional-analysis/{wildcards.marker}.raw "
+                      f"-g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['other_predictors']} "
+                      f"-o conditional-analysis/{BASE}-{wildcards.marker}.genesis.txt")
+            else:
+                print(f"Did not find {wildcards.marker} in plink/{BASE}_sub")
+                shell(f"touch conditional-analysis/{BASE}-{wildcards.marker}.genesis.txt")
+
+rule combine_conditional_analysis:
+    input: get_conditional_analysis_input
+    output: f"conditional-analysis/{BASE}.conditional-analysis.genesis.txt"
+    shell:
+        f"for f in conditional-analysis/*genesis.txt; do " \
+        "awk '{{print FILENAME, $0}}' $f | grep -v variant > conditional-analysis/tail.txt; " \
+        f"head -q -n 1 conditional-analysis/*genesis.txt | uniq | " \
+        "awk '{{printf(\"marker_covar\\t%s\\n\", $0}}' > conditional-analysis/head.txt; " \
+        f"cat conditional-analysis/head.txt conditional-analysis/tail.txt > {{output}}"
