@@ -137,4 +137,5 @@ pc.df$sample.id <- row.names(pcair$vectors)
 pc.df <- pc.df %>% mutate(scanID = sample.id) %>% select(-sample.id) %>% left_join(pData(scanAnnot), by="scanID")
 
 write.table(pc.df, paste0(outName,".genesis.pdat"), quote = F, row.names = F)
+write.table(as.data.frame(pcair$varpropr), paste0(outName, ".pcair.varprop"), quote=F, row.names= F)
 

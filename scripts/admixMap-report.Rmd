@@ -19,7 +19,10 @@ params:
   sHWE_markers: NA
   stats_file: NA
   pruned_bim: NA
+  ibd_ctrls: NA
   sHWE_entropy: NA
+  eigenval: NA
+  phenodat: NA
   rulegraph_file: NA
   config_file: NA
 ---
@@ -129,6 +132,9 @@ gwas_thresh = as.numeric(params$gwas_threshold)
 
 ent = read.table(params$sHWE_entropy)
 shwe = read.table(params$sHWE_markers)
+ibd_ctrl = read.table(params$ibd_ctrls)
+eigval = read.table(params$eigenval)
+pdat = read.table(params$phenodat)
 
 outPre = str_split(params$blink_rslt, "[.]")[[1]][1]
 
@@ -208,6 +214,12 @@ Sample file:
 yaml$samples
 ```
 
+The resulting dataset is composed of the following numbers of cases and controls:
+```{r case-numbers-sub}
+fam %>% mutate(phenotype = V6) %>% group_by(V6) %>% summarize(n=n()) %>% knitr::kable()
+```
+
+
 Then, the PLINK files are run through a series of of QC steps in order to prepare the data for calculation of PCs.  The first step is to isolate the control subjects and prune markers showing high amounts of linkage disequilibrium (based on _r^2^_) in the controls.  
 
 The parameters used for LD pruning in PLINK were:
@@ -219,6 +231,12 @@ PLINK is then used to calculate Identity by Descent (IBD) for each pair of contr
 ```{r IBD-thresh}
 yaml$IBD$pi_hat
 ```
+
+, which resulted in a dataset with the following number of unrelated controls:
+```{r IBD-ctrl-num}
+nrow(ibd_ctrl)
+```
+
 
 ## Structured Hardy-Weinberg Filter
 The sHWE (\href{https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6827367/}{{\color{blue}{\underline{structured Hardy-Weinberg equilibrium}}}}) method facilitates testing of HWE when a dataset contains multiple, genetically-structured populations.  However, there are two substantial limitations to this approach.  First, it requires the user to specify the number of populations in the dataset.  Since this is generally an unknown parameter, the authors suggest calculating p-values under a range of population numbers and then using the maximum entropy of the p-value distribution as criteria for finding the optimal population number.  The entropy is calculated over all bins of the p-value distribution excluding the left-most bin which contains the true SNPs violating HWE.  The remainder of this distribution should be uniform if the population parameter is accurate.  Entropy increases as the distribution becomes more uniform, so max entropy is used as the criteria.
@@ -264,14 +282,24 @@ nrow(shwe)
 
 # Population structure and Kinship
 
-Plot eigenvalues
+PC-AiR Variance Proportions:
+```{r plink-eigenvalues, fig.height = 4, fig.width = 4, fig.cap = "Proportion of variance explained by each PC from PC-AiR", warning=FALSE, message=FALSE}
+eigval %>% mutate(id = row_number()) %>% ggplot(aes(x = id, y = V1)) + geom_bar(stat="identity") + ylab("Eigenvalue") + xlab("")
+```
+
+PC plots:
+```{r plink-pcplots, fig.height = 4, fig.width = 4, fig.cap = "Pairwise PC plots for the number of PCs used in GWAS", warning=FALSE, message=FALSE}
+for (i in 1:as.numeric(yaml$gwas$pc_num)){
+  for (j in (i+1):as.numeric(yaml$gwas$pc_num)){
+    xvar = paste0("PC",i)
+    yvar = paste0("PC",j)
+    pdat %>% ggplot(aes_string(x=xvar,y=yvar,color='sex',shape='pheno')) + geom_point()
+  }
+}
+```
+
 
 Todo:
-post-subset sample size summary 
-
-sHWE
--number of unrelated controls
-
 control matching
 
 admixMap summary

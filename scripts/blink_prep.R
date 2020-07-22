@@ -41,13 +41,15 @@ fam %<>% mutate(taxa = V2, phenotype = V6, sex = V5)
 fam %>% select(taxa, phenotype) %>% write.table(paste0(opt$outPrefix, ".txt"), row.names = F, quote = F)
 
 ## For using PLINK PCs
-pca = read.table(opt$PCAfile, comment.char="")
-pca_num = as.numeric(opt$PCAnumber) + 2
-pca %<>% select(2:all_of(pca_num)) %>% mutate(taxa=str_replace(V2,"#","")) %>% select(-V2)
+# pca = read.table(opt$PCAfile, comment.char="")
+# pca_num = as.numeric(opt$PCAnumber) + 2
+# pca %<>% select(2:all_of(pca_num)) %>% mutate(taxa=str_replace(V2,"#","")) %>% select(-V2)
 
 ## For when using PCrelate PCs
-# pca = read.table(opt$PCAfile, comment.char="", header=T)
-# pca %<>% mutate(taxa=str_replace(scanID,"#","")) %>% select(-scanID)
+pca = read.table(opt$PCAfile, comment.char="", header=T)
+pca_num = as.numeric(opt$PCAnumber)
+pca %<>% select(1:all_of(pca_num), scanID) %>% mutate(taxa=str_replace(scanID,"#","")) %>% select(-scanID)
+
 
 if (opt$c != "none"){
   cov = read.table(opt$covariates, comment.char="")
