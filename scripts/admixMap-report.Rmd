@@ -23,6 +23,7 @@ params:
   sHWE_entropy: NA
   eigenval: NA
   phenodat: NA
+  kinplot: NA
   rulegraph_file: NA
   config_file: NA
 ---
@@ -280,15 +281,30 @@ nrow(shwe)
 ```
 
 
-# Population structure and Kinship
+## Population structure and Kinship
+
+The unrelated samples used in PC calculation (via PC-AiR) can be found here:
+```{r PCair-unrelateds}
+paste(getwd(), str_replace(params$eigenval, "varprop", "unrels"), sep = "/")
+```
+
+, and the related samples based on a kinship value greater than
+```{r PCair-kinship}
+yaml$kinship_threshold
+```
+
+can be found here:
+```{r PCair-relateds}
+paste(getwd(), str_replace(params$eigenval, "varprop", "rels"), sep = '/')
+```
 
 PC-AiR Variance Proportions:
 ```{r plink-eigenvalues, fig.height = 4, fig.width = 4, fig.cap = "Proportion of variance explained by each PC from PC-AiR", warning=FALSE, message=FALSE}
-eigval %>% mutate(id = row_number()) %>% ggplot(aes(x = id, y = V1)) + geom_bar(stat="identity") + ylab("Eigenvalue") + xlab("")
+eigval %>% mutate(id = row_number()) %>% ggplot(aes(x = id, y = V1)) + geom_bar(stat="identity") + ylab("Variance Proportion") + xlab("PC")
 ```
 
 PC plots:
-```{r plink-pcplots, fig.height = 4, fig.width = 4, fig.cap = "Pairwise PC plots for the number of PCs used in GWAS", warning=FALSE, message=FALSE}
+```{r plink-pcplots, fig.height = 4, fig.width = 4, fig.cap = "Pairwise PC plots (via PC-AiR) for the number of PCs used in GWAS", warning=FALSE, message=FALSE}
 for (i in 1:as.numeric(yaml$gwas$pc_num)){
   for (j in (i+1):as.numeric(yaml$gwas$pc_num)){
     xvar = paste0("PC",i)
@@ -297,12 +313,33 @@ for (i in 1:as.numeric(yaml$gwas$pc_num)){
   }
 }
 ```
+knitr::include_graphics(normalizePath(rulegraph_file))
 
+Kinship was recalculated via PCRelate, resulting in the following distribution of pairwise kinship values (y-axis):
+```{r, fig.height = 4, fig.width = 4, fig.cap = "Pairwise kinship plotted vs the probability that the pair of individuals have 0 alleles IBD at a random site on the genome (k0)", warning=FALSE, message=FALSE}
+knitr::include_graphics(normalizePath(params$kinplot))
+```
 
-Todo:
-control matching
+There should be a negative relationship between kinship and k0.  
 
-admixMap summary
+## Control Matching
+Control matching is optionally performed for BLINK and admixture mapping.  Logistic models implemented in GENESIS are able to handle highly imbalanced case/control ratios by way of a Saddle-Point Approximation for p-values, so control matching is not necessary.  
+
+Was control matching performed?
+```{r, ctrl_match, warning=FALSE, message=FALSE}
+yaml$match_controls
+```
+
+If 'true', then PLINK's \href{http://www.cog-genomics.org/plink/1.9/strat}{{\color{blue}{\underline{control matching program}}}} was implemented while requested the following number of controls to be retained per case sample (via -mcc flag):
+```{r, ctrl_num, warning=FALSE, message=FALSE}
+yaml$control_number
+```
+
+The retained samples can be found here:
+```{r, matched_samples, warning=FALSE, message=FALSE}
+paste(getwd(), str_replace(params$fam_file, "_sub", "_CtlMat"), sep="/")
+```
+
 
 # Results
 

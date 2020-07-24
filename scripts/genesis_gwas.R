@@ -127,7 +127,9 @@ Chroms = unique(chroms)
 results = foreach(i = 1:length(Chroms), .combine = rbind) %dopar% {
   snpIDs = getSnpID(genoData, chroms==Chroms[i])
   genoIterator <- GenotypeBlockIterator(genoData, snpBlock=snpBlockSize, snpInclude = snpIDs)
-  assocTestSingle(genoIterator, null.model = nullmod, test = Test)
+  rslt = assocTestSingle(genoIterator, null.model = nullmod, test = Test)
+  write.table(rslt, str_replace(outName, '.txt',paste0('.',i,'.txt')), quote=F, row.names = F)
+  rslt
 }
 
 # if (opt$distribution_family == "binomial"){

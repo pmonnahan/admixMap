@@ -2,11 +2,10 @@
 outname: "AncInf" # MODIFY: prefix used for naming output
 query: "PATH_TO_PLINK_PREFIX" #MODIFY: Prefix for PLINK files containing all of the query samples for ancestry inference
 admixMapping:
-  skip: 'true'
+  skip: 'false'
   rfmix: "OUTPUT_DIRECTORY_OF RFMIX" #MODIFY
   gen_since_admixture: '8'
   cores: '12'
-  premunged: "false"
 singularity:
   use_singularity: 'true'
   image: '/home/pmonnaha/pmonnaha/singularity/AncestryInference.sif' # MODIFY
@@ -28,8 +27,7 @@ IBD:
   maf: '0.05'
   cpj: '100000' # number of comparisons per job for IBS calculation
   pi_hat: '0.1875' # 0.1875 is suggested by doi: 10.1038/nprot.2010.116.
-  ibd1: '0.2'
-  filter_relateds: 'false' # This should be left as false.  No need to filter related individuals in BLINK or GENESIS.  However,
+  filter_relateds: 'false' # This should be left as false.  No need to filter related individuals in BLINK or GENESIS.  However, this is enforced in admixture mapping regardless of value set here.
 kinship_threshold: '0.125'  # Values below this are set to 0 (unrelated) in GENESIS
 match_controls: 'false'
 control_number: '4'
@@ -39,7 +37,9 @@ covariate_file: 'none' # Tab-delimited file with header line specifying names of
 samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
 cmd_prefix: "module load plink/1.90b6.10; module load htslib/1.6; module load bcftools/1.9;"
 gwas:
+  maf: '0.01'
   pc_num: '4'
+  maf: '0.01'
   blink_dir: "/usr/local/bin/BLINK"
   cores: '12'
   sig_threshold: '0.000005'
