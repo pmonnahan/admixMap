@@ -42,7 +42,7 @@ option_list <- list(
               help="path to file containing samples to include"),
   make_option(c("-C", "--covarString"), metavar="additional covariates", default = "none",
               help="comma delimited (no spaces) list of covariates contained in the pdat file"),
-  make_option(c("-c", "--cores"), type="integer", default=1,
+  make_option(c("-c", "--cores"), type="integer", default=2,
               help="Number of cores to use for parallel processing")
 )
 

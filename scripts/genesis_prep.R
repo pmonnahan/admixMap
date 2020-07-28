@@ -109,7 +109,7 @@ mat2gds(myGRM, paste0(outName,".genesis.grm.gds"))
 #output plot of kinship
 kinship <- mypcrelate$kinBtwn
 
-png(paste0(outName,'.kinplot'))
+png(paste0(outName,'.kinplot.png'))
 ggplot(kinship, aes(k0, kin)) +
   geom_hline(yintercept=2^(-seq(3,9,2)/2), linetype="dashed", color="grey") +
   geom_point(alpha=0.5) +

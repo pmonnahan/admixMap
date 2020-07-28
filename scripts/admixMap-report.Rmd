@@ -69,6 +69,7 @@ library("ggplot2")
 library("reshape2")
 library("yaml")
 library("dplyr")
+library("tibble")
 library("tidyr")
 library("magrittr")
 library("wrapr")
@@ -134,7 +135,8 @@ gwas_thresh = as.numeric(params$gwas_threshold)
 ent = read.table(params$sHWE_entropy)
 shwe = read.table(params$sHWE_markers)
 ibd_ctrl = read.table(params$ibd_ctrls)
-eigval = read.table(params$eigenval)
+eigval = read.table(params$eigenval, skip=1)
+eigval %<>% filter(!is.na(V1)) %>% rowid_to_column %>% mutate(PC = rowid, VarianceProportion = V1) %>% select(PC, VarianceProportion)
 pdat = read.table(params$phenodat)
 
 outPre = str_split(params$blink_rslt, "[.]")[[1]][1]
@@ -217,7 +219,7 @@ yaml$samples
 
 The resulting dataset is composed of the following numbers of cases and controls:
 ```{r case-numbers-sub}
-fam %>% mutate(phenotype = V6) %>% group_by(V6) %>% summarize(n=n()) %>% knitr::kable()
+fam %>% mutate(phenotype = V6) %>% group_by(phenotype) %>% summarize(n=n()) %>% knitr::kable()
 ```
 
 
@@ -300,20 +302,19 @@ paste(getwd(), str_replace(params$eigenval, "varprop", "rels"), sep = '/')
 
 PC-AiR Variance Proportions:
 ```{r plink-eigenvalues, fig.height = 4, fig.width = 4, fig.cap = "Proportion of variance explained by each PC from PC-AiR", warning=FALSE, message=FALSE}
-eigval %>% mutate(id = row_number()) %>% ggplot(aes(x = id, y = V1)) + geom_bar(stat="identity") + ylab("Variance Proportion") + xlab("PC")
+eigval %>% ggplot(aes(x = PC, y = VarianceProportion)) + geom_bar(stat="identity") + ylab("Variance Proportion") + xlab("PC")
 ```
 
 PC plots:
 ```{r plink-pcplots, fig.height = 4, fig.width = 4, fig.cap = "Pairwise PC plots (via PC-AiR) for the number of PCs used in GWAS", warning=FALSE, message=FALSE}
 for (i in 1:as.numeric(yaml$gwas$pc_num)){
   for (j in (i+1):as.numeric(yaml$gwas$pc_num)){
-    xvar = paste0("PC",i)
-    yvar = paste0("PC",j)
-    pdat %>% ggplot(aes_string(x=xvar,y=yvar,color='sex',shape='pheno')) + geom_point()
+    xvar = paste0(".$PC",i)
+    yvar = paste0(".$PC",j)
+    pdat %.>% print(ggplot(data = .,aes_string(x=xvar,y=yvar,color='sex',shape='pheno')) + geom_point(alpha = 0.5))
   }
 }
 ```
-knitr::include_graphics(normalizePath(rulegraph_file))
 
 Kinship was recalculated via PCRelate, resulting in the following distribution of pairwise kinship values (y-axis):
 ```{r, fig.height = 4, fig.width = 4, fig.cap = "Pairwise kinship plotted vs the probability that the pair of individuals have 0 alleles IBD at a random site on the genome (k0)", warning=FALSE, message=FALSE}
@@ -361,7 +362,7 @@ paste(getwd(), str_replace(params$genesis_rslt,"txt","pdat"), sep="/")
 Finally, a genetic-relatedness matrix is calculated via \href{https://www.rdocumentation.org/packages/GENESIS/versions/2.2.2/topics/pcrelate}{{\color{blue}{\underline{PC-Relate}}}}, which 'accounts for population structure (ancestry) among sample individuals through the use of ancestry representative principal components (PCs)'. 
 
 For the GWAS, the following number of PCs from PC-AiR were used to control for population structure:
-```{r pc-num}
+```{r pc-num2}
 yaml$gwas$pc_num
 ```
 and the genetic-relatedness matrix was used for the error-covariance matrix.

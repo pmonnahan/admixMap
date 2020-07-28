@@ -72,6 +72,8 @@ else:
         if config['run_settings']['scheduler'] == 'slurm': plink_run_specs[rule] = f"--memory {int(clusterfile[rule]['mem-per-cpu'].replace('G','000')) * int(clusterfile[rule]['ntasks'])} --threads {clusterfile[rule]['ntasks']}"
         elif config['run_settings']['scheduler'] == 'pbs':  plink_run_specs[rule] = f"--memory {clusterfile[rule]['mem'].replace('b','').replace('m','').replace('g','000')} --threads 1"
 
+
+#### DEFINE FUNCTIONS #####
 def get_all_inputs(wildcards):
     input_list = ["accessory/sHWE_tested_snps.txt", f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png",
                   f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec",
@@ -110,6 +112,50 @@ def plnk_rsrc(rule_name, plink_specs):
     except KeyError: resources = plink_specs['__default__']
     return(resources)
 
+# def calc_marker_test_coverage(file_list):
+#     marker_list = []
+#     ds_max = -9
+#     for done in file_list:
+#         ds_round = int(done.replace(f"sHWE/{BASE}_sHWE-DS", '').split('.')[0])
+#         if ds_round > ds_max: ds_max = ds_round
+#         with open(f"plink/DS/{BASE}_LDprune_ctrls_DS{ds_round}.bim", 'r') as bim_file:
+#             for line in bim_file:
+#                 marker_list.append(line.split()[1])
+#         marker_list = list(set(marker_list))
+#     return(marker_list, ds_max)
+
+def calc_marker_test_coverage(file):
+    rounds = []
+    if not os.path.exists(file):
+        rounds = [x for x in range(0,int(config['sHWE']['downsample_rounds']))]
+    else:
+        num_tested = 0
+        with open(file, 'r') as lines:
+            for line in lines: num_tested += 1
+        if num_tested < int(config['sHWE']['test_threshold']):
+            curr_ds = max([ int(file.strip('.txt').replace('DS', '').split('_')[-1]) for file in glob.glob(f'plink/DS/{BASE}_LDprune_ctrls_DS*.txt')]) + 1
+            rounds = [x for x in range(curr_ds + 1, curr_ds + int(config['sHWE']['downsample_rounds']) + 1)]
+    return(rounds)
+
+def check_marker_coverage(wildcards):
+    rounds = calc_marker_test_coverage('accessory/sHWE_downsampled_snps.txt')
+    if rounds: input_list = expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round = rounds)
+    else: input_list = glob.glob(f"plink/DS/{BASE}_LDprune_ctrls_DS*.txt")
+    return(input_list)
+
+def check_marker_coverage2(wildcards):
+    # glob_list = glob.glob(f"sHWE/{BASE}_sHWE-DS*.rmv.bim")
+    # if not glob_list: # if we've not done any sHWE tests then start from the beginning
+    #     input_list = expand(f"sHWE/{BASE}_sHWE-DS{{round}}", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
+    # else: # If we have already tested some downsampled datasets for sHWE
+    #     marker_list, ds_max = calc_marker_test_coverage(glob_list)
+    rounds = calc_marker_test_coverage('accessory/sHWE_tested_snps.txt')
+    if rounds: input_list = expand(f"sHWE/{BASE}_sHWE-DS{{round}}", round = rounds)
+    else: input_list = glob.glob(f"sHWE/{BASE}_sHWE-DS*")
+    return(input_list)
+
+
+#### DEFINE RULES FOR PIPELINE EXECUTION #####
 rule all:
     input: get_all_inputs
 
@@ -125,6 +171,7 @@ rule make_rulegraph:
 rule subset_individuals:
     input: f"{QUERY}.bed"
     output: f"plink/{BASE}_sub.bed"
+    params: awk_string = "\'{if($6==1) print $1,$2}' " + f"plink/{BASE}_sub.fam > accessory/control_samples.txt"
     run:
         if config['samples'] == 'all':
             shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep-allele-order --make-bed --maf {config['gwas']['maf']} --out plink/{BASE}_sub {plnk_rsrc(rule, plink_run_specs)}; "
@@ -134,19 +181,20 @@ rule subset_individuals:
                   f"sed -i 's/#//g' plink/{BASE}_sub.fam")
         else:
             print("If 'sample' is not set to 'all' in the config.yml file, then user must specify a valid (PLINK-format; FID IID) text file for subsetting individuals")
+        shell(f"{CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_sub_ctrls {plnk_rsrc(rule, plink_run_specs)}")
 
+#TODO re-work so that LD pruning is performed AFTER subsetting controls.
 rule LD_prune:
-    input: f"plink/{BASE}_sub.bed"
-    output: f"plink/{BASE}_LDprune_ctrls.bed", f"plink/{BASE}_LDprune.bed", f"plink/{BASE}.LDkeep.prune.in"
+    input: f"plink/{BASE}_sub_ctrls.bed"
+    output: f"plink/{BASE}_LDprune_ctrls.bed", f"plink/{BASE}.LDkeep.prune.in", f"plink/{BASE}_LDprune.bed"
     params:
         WS = config['LD_pruning']['window_size'],
         SS = config['LD_pruning']['step_size'],
-        RT = config['LD_pruning']['r2_threshold'],
-        awk_string = "\'{if($6==1) print $1,$2}' " + f"plink/{BASE}_LDprune.fam > accessory/control_samples.txt"
+        RT = config['LD_pruning']['r2_threshold']
     shell:
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep {plnk_rsrc(rule, plink_run_specs)}; "
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune {plnk_rsrc(rule, plink_run_specs)} ; "
-        f"{CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_LDprune_ctrls {plnk_rsrc(rule, plink_run_specs)}"
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep {plnk_rsrc(rule, plink_run_specs)}; "
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune_ctrls {plnk_rsrc(rule, plink_run_specs)}"
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune {plnk_rsrc(rule, plink_run_specs)}"
 
 rule calcFreq:
     input: f"plink/{BASE}_LDprune.bed"
@@ -186,29 +234,36 @@ rule IBD_filter_ctrls:
 # So for random sample of 50 individuals, and 2Million markers, we'd expect ~150k would be testable (i.e. complete genotype data)
 # With 100 individuals, you'd only get ~12k markers per downsample.  If no overlap in markers tested per downsample (best-case scenario), ~167 jobs would be required to test all 2Million SNPs
 # With 50, you'd need 13 jobs.
-rule downsample_controls:
+rule generate_downsample_controls:
     input: f"plink/{BASE}_LDp_ctrls_IBDflt.bed"
-    output: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed"
+    output: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.txt"
     run:
         shell(f"{CMD_PREFIX} shuf -n {config['sHWE']['downsample_number']} plink/{BASE}_LDp_ctrls_IBDflt.fam > plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt")
+
+
+rule downsample_controls:
+    input: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.txt"
+    output: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed"
+    run:
         shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_ctrls_IBDflt --keep plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt --maf {config['sHWE']['maf']} "
               f"--geno 0.0 --keep-allele-order --make-bed --out plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}} {plnk_rsrc(rule, plink_run_specs)}")
 
-rule check_marker_coverage:
-    input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
-    output: "accessory/sHWE_tested_snps.txt", "accessory/.sHWE_pass.txt"
+checkpoint check_markers_downsampled:
+    input: check_marker_coverage
+    output: "accessory/sHWE_downsampled_snps.txt", "accessory/.sHWE_downsample_pass.txt"
     run:
-        shell(f"cat plink/DS/{BASE}_LDprune_ctrls_DS*.bim | sort | uniq > accessory/sHWE_tested_snps.txt")
-        with open('accessory/sHWE_tested_snps.txt', 'r') as tested:
-            num_tested = 0
-            for line in tested: num_tested += 1
+        shell(f"cat plink/DS/{BASE}_LDprune_ctrls_DS*.bim | sort | uniq > accessory/sHWE_downsampled_snps.txt")
+        with open('accessory/sHWE_downsampled_snps.txt', 'r') as tested:
+            for num_tested, line in enumerate(tested): pass
         if num_tested < int(config['sHWE']['test_threshold']):
-            print(f"Fewer than {config['sHWE']['test_threshold']} SNPs tested for sHWE; in config.yml consider either reducing 'downsample_number' or increasing 'downsample_rounds' or both")
+            print(f"Failed Checkpoint\nReason: Fewer than {config['sHWE']['test_threshold']} unique SNPs downsampled for sHWE\n"
+                  f"Relaunch snakemake to run an additional {config['sHWE']['downsample_rounds']} rounds of downsampling.\n"
+                  f"This value can be adjusted in config.yml")
         else:
-            shell('touch accessory/.sHWE_pass.txt')
+            shell('touch accessory/.sHWE_downsample_pass.txt')
 
 rule optimize_sHWE:
-    input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))]), "accessory/.sHWE_pass.txt"
+    input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))]), "accessory/.sHWE_downsample_pass.txt"
     output: f"sHWE/{BASE}_sHWE_{{d}}"
     shell:
         f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS0 -d {{wildcards.d}} -o sHWE/{BASE}_sHWE_{{wildcards.d}}"
@@ -239,7 +294,7 @@ rule extract_optimum_popnum:
         with open("sHWE/.optimum_popnum.txt", 'w') as outfile: outfile.write(str(best_popnum))
 
 rule structHWE:
-    input: "sHWE/entropy.txt", f"sHWE/.optimum_popnum.txt", expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
+    input: "sHWE/entropy.txt", f"sHWE/.optimum_popnum.txt", f"accessory/.sHWE_downsample_pass.txt"
     output: f"sHWE/{BASE}_sHWE-DS{{f}}", f"sHWE/{BASE}_sHWE-DS{{f}}.rmv.bim"
     params: threshold = config['sHWE']['threshold']
     run:
@@ -248,13 +303,41 @@ rule structHWE:
         popfile.close()
         shell(f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.f}} -d {popnum} -t {{params.threshold}} -o sHWE/{BASE}_sHWE-DS{{wildcards.f}}")
 
+checkpoint check_markers_tested:
+    input: check_marker_coverage2
+    output: "accessory/.sHWE_pass.txt"
+    run:
+        # glob_list = glob.glob(f"sHWE/{BASE}_sHWE-DS*.rmv.bim")
+        # marker_list, ds_max = calc_marker_test_coverage(glob_list)
+        # if len(marker_list) < int(config['sHWE']['test_threshold']):
+        #     print(f"Failed Checkpoint\nReason: Fewer than {config['sHWE']['test_threshold']} unique SNPs TESTED for sHWE\n"
+        #           f"Relaunch snakemake to run an additional {config['sHWE']['downsample_rounds']} rounds of downsampling followed by testing.\n"
+        #           f"This value can be adjusted in config.yml")
+        # else:
+        #     shell('touch accessory/.sHWE_pass.txt')
+        file_list = [x for x in glob.glob(f"plink/DS/{BASE}_LDprune_ctrls_DS*.bim")
+                     if os.path.exists(f"sHWE/{BASE}_sHWE-DS{int(x.strip('.bim').replace('DS', '').split('_')[-1])}.rmv.bim")]
+        # NEED TO loop over LDprune_ctrls_DS*.bim and CHECK IF sHWE-DSXXX.rmv.bim exists before adding it to a cat string.
+        shell(f"cat {' '.join(file_list)} | cut -d \" \" -f 2 | sort | uniq > accessory/sHWE_tested_snps.txt")
+        shell(f"cp accessory/sHWE_tested_snps.txt accessory/sHWE_tested_snps2.txt")
+        with open('accessory/sHWE_tested_snps.txt', 'r') as tested:
+            for num_tested, line in enumerate(tested): pass
+        if num_tested < int(config['sHWE']['test_threshold']):
+            print(f"Failed Checkpoint\nReason: Only {num_tested} markers were tested for sHWE, which is fewer than requested threshold ({config['sHWE']['test_threshold']})\n"
+                  f"Relaunch snakemake to run an additional {config['sHWE']['downsample_rounds']} rounds of downsampling followed by testing.\n"
+                  f"This value as well as the threshold can be adjusted in config.yml")
+        else:
+            shell('touch accessory/.sHWE_pass.txt')
+
 rule filter_sHWE_SNPs:
-    input: expand(f"sHWE/{BASE}_sHWE-DS{{f}}", f = range(0,int(config['sHWE']['downsample_rounds']))), expand(f"sHWE/{BASE}_sHWE-DS{{f}}.rmv.bim", f = range(0,int(config['sHWE']['downsample_rounds'])))
+    input: "accessory/.sHWE_pass.txt"
     output: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}_LDp_sHWE.bim"
     params: maf = config['sHWE']['maf']
     shell:
-            f"cat {{input[1]}} | sort | uniq > sHWE/sHWE.rmvd.snps.bim; "
-            f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --exclude sHWE/sHWE.rmvd.snps.bim --keep-allele-order --make-bed --maf {{params.maf}} --out plink/{BASE}_LDp_sHWE {plnk_rsrc(rule, plink_run_specs)}"
+            f"cat sHWE/{BASE}_sHWE-DS*.rmv.bim | sort | uniq > sHWE/sHWE.rmvd.snps.bim; "
+            f"cut -f 2 -d \" \" sHWE/sHWE.rmvd.snps.bim | grep -v -f - accessory/sHWE_tested_snps.txt > accessory/sHWE_kept_snps.bim; "
+            f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --extract accessory/sHWE_kept_snps.bim --keep-allele-order "
+            f"--make-bed --maf {{params.maf}} --out plink/{BASE}_LDp_sHWE {plnk_rsrc(rule, plink_run_specs)}"
 
 rule IBD_filter:
     input: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}.genome.gz"
@@ -376,13 +459,13 @@ rule make_report:
                           f"ibd_ctrls=\"plink/{BASE}_LDp_ctrls_IBDflt.fam\", " \
                           f"eigenval=\"{BASE}.pcair.varprop\", " \
                           f"phenodat=\"{BASE}.genesis.pdat\", " \
-                          f"kinplot=\"{BASE}.kinplot\", " \
+                          f"kinplot=\"{BASE}.kinplot.png\", " \
                           f"rulegraph_file=\"{BASE}-rulegraph.png\", "
             if config['admixMapping']['skip'] != 'true': report_line += f"admixMap_rslt=\"{BASE}.admixmap.txt\", "
             else: report_line += f"admixMap_rslt=\"-9\", "
             report_line += f"config_file=\"workflow/config.yml\"))\' | R --vanilla"
             report_cmds.write(report_line)
-        shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf; mv *kinplot figures")
+        shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf; mv *kinplot.png figures")
 
 rule annotate_snps: # get genotype frequencies from VCF
     input: f"{BASE}.genesis.sig.txt", f"{BASE}.blink.sig.txt"

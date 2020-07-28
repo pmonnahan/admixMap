@@ -7,8 +7,8 @@ __default__:
   mem: '16gb'
   m: 'a'
   r: 'n'
-  o: 'OandE/{rule}.{wildcards}.out'
-  e: 'OandE/{rule}.{wildcards}.err'
+  o: 'OandE/{rule}.{wildcards}out'
+  e: 'OandE/{rule}.{wildcards}err'
 
 filter_sHWE_SNPs:
   walltime: '06:00:00'
