@@ -137,7 +137,7 @@ shwe = read.table(params$sHWE_markers)
 ibd_ctrl = read.table(params$ibd_ctrls)
 eigval = read.table(params$eigenval, skip=1)
 eigval %<>% filter(!is.na(V1)) %>% rowid_to_column %>% mutate(PC = rowid, VarianceProportion = V1) %>% select(PC, VarianceProportion)
-pdat = read.table(params$phenodat)
+pdat = read.table(params$phenodat, head=T)
 
 outPre = str_split(params$blink_rslt, "[.]")[[1]][1]
 
@@ -311,7 +311,7 @@ for (i in 1:as.numeric(yaml$gwas$pc_num)){
   for (j in (i+1):as.numeric(yaml$gwas$pc_num)){
     xvar = paste0(".$PC",i)
     yvar = paste0(".$PC",j)
-    pdat %.>% print(ggplot(data = .,aes_string(x=xvar,y=yvar,color='sex',shape='pheno')) + geom_point(alpha = 0.5))
+    pdat %>% mutate(Pheno = as.character(pheno)) %.>% print(ggplot(data = .,aes_string(x=xvar,y=yvar,color='sex',shape='Pheno')) + geom_point(alpha = 0.5))
   }
 }
 ```

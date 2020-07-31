@@ -37,6 +37,8 @@ covariate_file: 'none' # Tab-delimited file with header line specifying names of
 samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
 cmd_prefix: "module load plink/1.90b6.10; module load htslib/1.6; module load bcftools/1.9;"
 gwas:
+  mbc_pval: '0.0001'
+  missingness: '0.2'
   maf: '0.01'
   pc_num: '4'
   maf: '0.01'

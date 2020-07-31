@@ -36,23 +36,22 @@ else:
 BASE = config['outname']  # Base prefix used for naming files is set as basename of
 INPUT = f"input/{BASE}"
 
-samps = []
+samps = [] # Create list containing all samples in original input fam file
 with open (f"{QUERY}.fam") as fam_file:
-        for line in fam_file:
-            line = line.strip().split()
-            samps.append(line[1].replace("#", ""))
+    for line in fam_file:
+        line = line.strip().split()
+        samps.append(line[1].replace("#", ""))
 
 #Retrieve control individuals; Determine number of controls from .fam file
-if config['samples'] == 'all':
-    ind_num = len(samps)
+assert config['samples'] == 'all' or os.path.exists(config['samples']), print("'samples' must be set to 'all' or a valid path to PLINK-format (FID IID) text file in config file")
+if config['samples'] == 'all': ind_num = len(samps)
 elif os.path.exists(config['samples']):
     ind_num = 0
     with open(config['samples'], 'r') as samp_file:
         for ind in samp_file:
             if ind.strip().split()[1] in samps: ind_num += 1
-else:
-    print("'samples' must be set to 'all' or a valid path in config file")
 
+# Determine number of pairwise comparisons of individuals necessary for IBD/IBS calculation in PLINK and convert this to the number of necessary jobs
 comparisons = ind_num * (ind_num - 1) / 2
 comparisons_per_job = int(config['IBD']['cpj'])
 num_jobs = math.ceil(comparisons / comparisons_per_job)
@@ -60,6 +59,7 @@ if num_jobs <= 1: # Attempt to catch an error that arises in instances where the
     comparisons_per_job = comparisons_per_job / 100
     num_jobs = math.ceil(comparisons / comparisons_per_job)
 
+# Determine jobs to run locally vs on cluster.  Also coordinate resource management for PLINK.
 plink_run_specs = {'__default__': ""} # Set default to empty string in case of local run.  i.e. default to plink's auto-detection of resources
 if config['run_settings']['local_run'] == 'true':
     localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, blink_GWAS, extract_optimum_popnum, cat_admixMap
@@ -68,14 +68,14 @@ else:
     assert config['run_settings']['scheduler'] in ['pbs', 'slurm'], print(f"\nThe scheduler specified at run_settings -> scheduler: \'{config['run_settings']['scheduler']}\' is invalid.\n")
     assert os.path.exists(config['run_settings']['cluster_config']), print(f"\nMust provide a cluster configuration file under run_settings -> cluster_config in the config.yml file\nFile \'{config['run_settings']['cluster_config']}\' does not exist\n")
     clusterfile = yaml.load(open(config['run_settings']['cluster_config']), Loader=yaml.FullLoader)
-    for rule in clusterfile.keys():
+    for rule in clusterfile.keys(): # Purpose of this code is to make sure plink requests same amount of memory/threads as specified in cluster.yaml file
         if config['run_settings']['scheduler'] == 'slurm': plink_run_specs[rule] = f"--memory {int(clusterfile[rule]['mem-per-cpu'].replace('G','000')) * int(clusterfile[rule]['ntasks'])} --threads {clusterfile[rule]['ntasks']}"
         elif config['run_settings']['scheduler'] == 'pbs':  plink_run_specs[rule] = f"--memory {clusterfile[rule]['mem'].replace('b','').replace('m','').replace('g','000')} --threads 1"
 
 
 #### DEFINE FUNCTIONS #####
 def get_all_inputs(wildcards):
-    input_list = ["accessory/sHWE_tested_snps.txt", f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png",
+    input_list = ["accessory/.sHWE_pass.txt", f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png",
                   f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec",
                   f"accessory/samples.txt", f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.genome.gz",
                   f"{BASE}.blink.txt", f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf", f"{BASE}.genesis.sig.annt.txt", f"{BASE}.blink.sig.annt.txt"]
@@ -112,18 +112,6 @@ def plnk_rsrc(rule_name, plink_specs):
     except KeyError: resources = plink_specs['__default__']
     return(resources)
 
-# def calc_marker_test_coverage(file_list):
-#     marker_list = []
-#     ds_max = -9
-#     for done in file_list:
-#         ds_round = int(done.replace(f"sHWE/{BASE}_sHWE-DS", '').split('.')[0])
-#         if ds_round > ds_max: ds_max = ds_round
-#         with open(f"plink/DS/{BASE}_LDprune_ctrls_DS{ds_round}.bim", 'r') as bim_file:
-#             for line in bim_file:
-#                 marker_list.append(line.split()[1])
-#         marker_list = list(set(marker_list))
-#     return(marker_list, ds_max)
-
 def calc_marker_test_coverage(file):
     rounds = []
     if not os.path.exists(file):
@@ -144,11 +132,6 @@ def check_marker_coverage(wildcards):
     return(input_list)
 
 def check_marker_coverage2(wildcards):
-    # glob_list = glob.glob(f"sHWE/{BASE}_sHWE-DS*.rmv.bim")
-    # if not glob_list: # if we've not done any sHWE tests then start from the beginning
-    #     input_list = expand(f"sHWE/{BASE}_sHWE-DS{{round}}", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))])
-    # else: # If we have already tested some downsampled datasets for sHWE
-    #     marker_list, ds_max = calc_marker_test_coverage(glob_list)
     rounds = calc_marker_test_coverage('accessory/sHWE_tested_snps.txt')
     if rounds: input_list = expand(f"sHWE/{BASE}_sHWE-DS{{round}}", round = rounds)
     else: input_list = glob.glob(f"sHWE/{BASE}_sHWE-DS*")
@@ -161,7 +144,7 @@ rule all:
 
 rule clean:
     shell:
-        "rm input/*; rm -r plink/*; rm BLINK/*; rm data/*"
+        "rm input/*; rm -r plink/*; rm BLINK/*; rm data/*; rm *txt; rm accessory/*"
 
 rule make_rulegraph:
     output: f"{BASE}-rulegraph.png"
@@ -170,7 +153,7 @@ rule make_rulegraph:
 
 rule subset_individuals:
     input: f"{QUERY}.bed"
-    output: f"plink/{BASE}_sub.bed"
+    output: f"plink/{BASE}_sub.bed", f"plink/{BASE}_sub_ctrls.bed"
     params: awk_string = "\'{if($6==1) print $1,$2}' " + f"plink/{BASE}_sub.fam > accessory/control_samples.txt"
     run:
         if config['samples'] == 'all':
@@ -179,22 +162,33 @@ rule subset_individuals:
         elif os.path.exists(config['samples']):
             shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep {config['samples']} --keep-allele-order --maf {config['gwas']['maf']} --allow-no-sex --make-bed --out plink/{BASE}_sub {plnk_rsrc(rule, plink_run_specs)};"
                   f"sed -i 's/#//g' plink/{BASE}_sub.fam")
-        else:
-            print("If 'sample' is not set to 'all' in the config.yml file, then user must specify a valid (PLINK-format; FID IID) text file for subsetting individuals")
         shell(f"{CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_sub_ctrls {plnk_rsrc(rule, plink_run_specs)}")
 
-#TODO re-work so that LD pruning is performed AFTER subsetting controls.
+rule filter_missingness_by_case:
+    input: f"plink/{BASE}_sub.bed", f"plink/{BASE}_sub_ctrls.bed"
+    output: f"plink/{BASE}_sub_mflt.bed", f"plink/{BASE}_sub_ctrls_mflt.bed"
+    run:
+        import pandas as pd
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --test-missing --allow-no-sex --out plink/{BASE}_sub")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --missing --allow-no-sex --out plink/{BASE}_sub")
+        mbc = pd.read_table(f"plink/{BASE}_sub.missing", sep = r"\s+")
+        mis = pd.read_table(f"plink/{BASE}_sub.lmiss", sep = r"\s+")
+        dat = pd.concat([mbc[mbc['P'] < float(config['gwas']['mbc_pval'])]['SNP'], mis[mis['F_MISS'] > float(config['gwas']['missingness'])]['SNP']]).drop_duplicates()
+        dat.to_csv('accessory/missing_filter.txt', header=False,index=False)
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --exclude accessory/missing_filter.txt --keep-allele-order --make-bed --out plink/{BASE}_sub_mflt")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls --exclude accessory/missing_filter.txt --keep-allele-order --make-bed --out plink/{BASE}_sub_ctrls_mflt")
+
 rule LD_prune:
-    input: f"plink/{BASE}_sub_ctrls.bed"
+    input: f"plink/{BASE}_sub_ctrls_mflt.bed"
     output: f"plink/{BASE}_LDprune_ctrls.bed", f"plink/{BASE}.LDkeep.prune.in", f"plink/{BASE}_LDprune.bed"
     params:
         WS = config['LD_pruning']['window_size'],
         SS = config['LD_pruning']['step_size'],
         RT = config['LD_pruning']['r2_threshold']
     shell:
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep {plnk_rsrc(rule, plink_run_specs)}; "
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune_ctrls {plnk_rsrc(rule, plink_run_specs)}"
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune {plnk_rsrc(rule, plink_run_specs)}"
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls_mflt --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep {plnk_rsrc(rule, plink_run_specs)}; "
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls_mflt --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune_ctrls {plnk_rsrc(rule, plink_run_specs)};"
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune {plnk_rsrc(rule, plink_run_specs)}"
 
 rule calcFreq:
     input: f"plink/{BASE}_LDprune.bed"
@@ -239,7 +233,6 @@ rule generate_downsample_controls:
     output: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.txt"
     run:
         shell(f"{CMD_PREFIX} shuf -n {config['sHWE']['downsample_number']} plink/{BASE}_LDp_ctrls_IBDflt.fam > plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt")
-
 
 rule downsample_controls:
     input: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.txt"
@@ -361,11 +354,11 @@ rule controlMatch:
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 {config['control_number']} --out plink/{BASE} {plnk_rsrc(rule, plink_run_specs)}; "
                   f"{CMD_PREFIX} " + "awk '{{if(NF!=2) for (i = 2; i <= NF; i++) print $i}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples2.txt; "
                   "awk '{{split($2,a,\"_\"); printf(\"%s\\n%s\\n\",$2,a[1])}}' accessory/samples2.txt | sed 's/#//g' > accessory/samples.txt")
-            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/samples2.txt --make-bed --out input/{BASE}_CtlMat {plnk_rsrc(rule, plink_run_specs)}; "
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --keep accessory/samples2.txt --make-bed --out input/{BASE}_CtlMat {plnk_rsrc(rule, plink_run_specs)}; "
                   f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep accessory/samples2.txt --make-bed --out input/{BASE}_PCA {plnk_rsrc(rule, plink_run_specs)}")
         else:
             shell("{CMD_PREFIX} awk '{{split($2,a,\"_\"); printf(\"%s\\n%s\\n\",$2,a[1])}}' plink/" + BASE + "_LDp_sHWE_IBDflt.fam | sed 's/#//g' > accessory/samples.txt")
-            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --make-bed --out input/{BASE}_CtlMat {plnk_rsrc(rule, plink_run_specs)}; "
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --make-bed --out input/{BASE}_CtlMat {plnk_rsrc(rule, plink_run_specs)}; "
                   f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --make-bed --out input/{BASE}_PCA {plnk_rsrc(rule, plink_run_specs)}")
 
 rule calcPCA:
@@ -398,10 +391,10 @@ rule cat_admixMap:
         shell(f"head -n 1 {BASE}_chr1.admixmap.txt > header.txt; tail -q -n +2  {BASE}_chr*.admixmap.txt > body.txt; cat header.txt body.txt > {BASE}.admixmap.txt; rm header.txt; rm body.txt")
 
 rule genesis_prep:
-    input: f"plink/{BASE}_sub.bed", f"plink/{BASE}_LDp_sHWE.bim"
+    input: f"plink/{BASE}_sub_mflt.bed", f"plink/{BASE}_LDp_sHWE.bim"
     output: f"{BASE}.genesis.pdat", f"{BASE}.genesis.grm.gds", f"{BASE}.genesis.gds"
     run:
-        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R -p plink/{BASE}_sub -k {{input[1]}} -n {config['gwas']['pc_num']} -o {BASE} -l {config['LD_pruning']['r2_threshold']} -t {config['kinship_threshold']}"
+        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R -p plink/{BASE}_sub_mflt -k {{input[1]}} -n {config['gwas']['pc_num']} -o {BASE} -l {config['LD_pruning']['r2_threshold']} -t {config['kinship_threshold']}"
         if os.path.exists(config['covariate_file']): #Not tested
                 cmd += f" -C {config['covariate_file']}"
         shell(cmd)
@@ -447,7 +440,7 @@ rule make_report:
                           f"params=list(genesis_rslt=\"{BASE}.genesis.txt\", " \
                           f"blink_rslt=\"{BASE}.blink.txt\", " \
                           f"global_ancestry=\"{BASE}.globalancestry.txt\", " \
-                          f"fam_file=\"plink/{BASE}_sub.fam\", " \
+                          f"fam_file=\"plink/{BASE}_sub_mflt.fam\", " \
                           f"input_directory=\"input/\", " \
                           f"gen_since_admix=\"{config['admixMapping']['gen_since_admixture']}\", " \
                           f"gwas_threshold=\"{config['gwas']['sig_threshold']}\", " \
@@ -472,8 +465,8 @@ rule annotate_snps: # get genotype frequencies from VCF
     output: f"{BASE}.genesis.sig.annt.txt", f"{BASE}.blink.sig.annt.txt"
     run:
         shell(f"cut -f 1 {BASE}.genesis.sig.txt > {BASE}.genesis.sigID.txt; cut -f 1 {BASE}.blink.sig.txt > {BASE}.blink.sigID.txt")
-        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --extract {BASE}.genesis.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.gen.sig {plnk_rsrc(rule, plink_run_specs)}")
-        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --extract {BASE}.blink.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.blink.sig {plnk_rsrc(rule, plink_run_specs)}")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {BASE}.genesis.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.gen.sig {plnk_rsrc(rule, plink_run_specs)}")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {BASE}.blink.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.blink.sig {plnk_rsrc(rule, plink_run_specs)}")
         cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.gen.sig.vcf | " \
               "awk '{{split($8,a,\"|\"); split(a[1],b,\"=\"); print $1,$2,$4,$5,a[4],a[3],a[2],b[2]}}' | grep -v \"#\" > {BASE}.genesis.sig.preannt.txt"
         shell(cmd)
@@ -490,14 +483,14 @@ rule conditional_analysis:
         if os.path.exists(config['conditional_analysis']['snp_list']):
             if not os.path.exists('conditional-analysis'): os.mkdir('conditional-analysis')
             chrom, pos = f"{wildcards.marker}".split("-")
-            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --snp {wildcards.marker.replace('-',':')} --recodeAD --out conditional-analysis/{wildcards.marker} {plnk_rsrc(rule, plink_run_specs)} || true")
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --snp {wildcards.marker.replace('-',':')} --recodeAD --out conditional-analysis/{wildcards.marker} {plnk_rsrc(rule, plink_run_specs)} || true")
             if os.path.exists(f"conditional-analysis/{wildcards.marker}.raw"):
                 shell(f"{CMD_PREFIX} Rscript {CODE}/genesis_conditional_analysis.R -a {chrom} -b {pos} -d {config['conditional_analysis']['distance']} "
                       f"-m conditional-analysis/{wildcards.marker}.raw "
                       f"-g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['other_predictors']} "
                       f"-o conditional-analysis/{BASE}-{wildcards.marker}.genesis.txt")
             else:
-                print(f"Did not find {wildcards.marker} in plink/{BASE}_sub")
+                print(f"Did not find {wildcards.marker} in plink/{BASE}_sub_mflt")
                 shell(f"touch conditional-analysis/{BASE}-{wildcards.marker}.genesis.txt")
 
 rule combine_conditional_analysis:
