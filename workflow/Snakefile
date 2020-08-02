@@ -382,7 +382,7 @@ rule admixMap:
     input: f"input/{BASE}_chr{{CHROM}}.admixMap.dat"
     output: f"{BASE}_chr{{CHROM}}.admixmap.txt"
     threads: 4
-    shell: f"{CMD_PREFIX} Rscript {CODE}/admixMap2.R -f {{input}} -o {BASE}_chr{{wildcards.CHROM}} -P {config['ancestry_predictors']} -p {config['other_predictors']} -c {{threads}}"
+    shell: f"{CMD_PREFIX} Rscript {CODE}/admixMap2.R -f {{input}} -o {BASE}_chr{{wildcards.CHROM}} -P {config['admixMapping']['ancestry_predictors']} -p {config['admixMapping']['other_predictors']} -c {{threads}}"
 
 rule cat_admixMap:
     input: expand(f"{BASE}_chr{{CHROM}}.admixmap.txt", CHROM = range(1,23))
@@ -404,7 +404,7 @@ rule genesis_GWAS:
     output: f"{BASE}.genesis.txt"
     threads: int(config['gwas']['cores'])
     run:
-        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['other_predictors']} -o {BASE}.genesis.txt -c {{threads}}"
+        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['gwas']['other_predictors']} -o {BASE}.genesis.txt -c {{threads}}"
         shell(cmd)
 
 rule blink_convert:
@@ -444,7 +444,7 @@ rule make_report:
                           f"input_directory=\"input/\", " \
                           f"gen_since_admix=\"{config['admixMapping']['gen_since_admixture']}\", " \
                           f"gwas_threshold=\"{config['gwas']['sig_threshold']}\", " \
-                          f"ancestry_comps=\"{config['ancestry_predictors']}\", " \ 
+                          f"ancestry_comps=\"{config['admixMapping']['ancestry_predictors']}\", " \ 
                           f"stats_file=\"{BASE}.admixmap.txt\", " \
                           f"pruned_bim=\"plink/{BASE}_LDp_sHWE.bim\", " \
                           f"sHWE_entropy=\"sHWE/entropy.txt\", " \
@@ -487,7 +487,7 @@ rule conditional_analysis:
             if os.path.exists(f"conditional-analysis/{wildcards.marker}.raw"):
                 shell(f"{CMD_PREFIX} Rscript {CODE}/genesis_conditional_analysis.R -a {chrom} -b {pos} -d {config['conditional_analysis']['distance']} "
                       f"-m conditional-analysis/{wildcards.marker}.raw "
-                      f"-g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['other_predictors']} "
+                      f"-g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['gwas']['other_predictors']} "
                       f"-o conditional-analysis/{BASE}-{wildcards.marker}.genesis.txt")
             else:
                 print(f"Did not find {wildcards.marker} in plink/{BASE}_sub_mflt")

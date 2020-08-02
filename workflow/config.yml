@@ -1,11 +1,24 @@
 #Modify all lines indicated with MODIFY
-outname: "AncInf" # MODIFY: prefix used for naming output
 query: "PATH_TO_PLINK_PREFIX" #MODIFY: Prefix for PLINK files containing all of the query samples for ancestry inference
+samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
+outname: "AncInf" # MODIFY: prefix used for naming output
 admixMapping:
   skip: 'false'
   rfmix: "OUTPUT_DIRECTORY_OF RFMIX" #MODIFY
   gen_since_admixture: '8'
   cores: '12'
+  ancestry_predictors: 'AFR,EUR,AMR'
+  other_predictors: 'sex'  # this should include the variable names provided in covariate_file if those variables are desired to be included in the admixture mapping.
+gwas:
+  mbc_pval: '0.0001' # pvalue threshold for missingness-by-case
+  missingness: '0.2' # missingness threshold
+  maf: '0.01' # Minor allele frequency threshold
+  pc_num: '4' # Number of PCs to use in GWAS
+  blink_dir: "/usr/local/bin/BLINK" # Do not change
+  cores: '12'
+  sig_threshold: '0.000005'
+  covars: 'sex'
+  other_predictors: 'sex'  # this should include the variable names provided in covariate_file if those variables are desired to be included in the admixture mapping.
 singularity:
   use_singularity: 'true'
   image: '/home/pmonnaha/pmonnaha/singularity/AncestryInference.sif' # MODIFY
@@ -31,21 +44,8 @@ IBD:
 kinship_threshold: '0.125'  # Values below this are set to 0 (unrelated) in GENESIS
 match_controls: 'false'
 control_number: '4'
-ancestry_predictors: 'AFR,EUR,AMR'
-other_predictors: 'sex'  # this should include the variable names provided in covariate_file if those variables are desired to be included in the admixture mapping.
-covariate_file: 'none' # Tab-delimited file with header line specifying names of covariates.  First column MUST be labeled with 'taxa' and should contain sample IDs EXACTLY as they are specified in input plink files.
-samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
+covariate_file: 'none' # Not tested; Tab-delimited file with header line specifying names of covariates.  First column MUST be labeled with 'taxa' and should contain sample IDs EXACTLY as they are specified in input plink files.
 cmd_prefix: "module load plink/1.90b6.10; module load htslib/1.6; module load bcftools/1.9;"
-gwas:
-  mbc_pval: '0.0001'
-  missingness: '0.2'
-  maf: '0.01'
-  pc_num: '4'
-  maf: '0.01'
-  blink_dir: "/usr/local/bin/BLINK"
-  cores: '12'
-  sig_threshold: '0.000005'
-  covars: 'sex'
 run_settings:
   local_run: 'false'
   cluster_config: 'workflow/cluster.yaml'
