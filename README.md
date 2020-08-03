@@ -1,7 +1,31 @@
+
+
+
 # Admixture and association mapping pipeline
 
 This pipeline implements admixture mapping on the output of the [AncInf](https://github.com/pmonnahan/AncInf) pipeline (i.e. RFMix output) and/or association mapping on the output of the [pre-imputation](https://github.com/pmonnahan/DataPrep) or [post-imputation](https://github.com/pmonnahan/DataPrep/postImpute) QC pipelines.  It is not completely necessary to generate the input via the mentioned pipelines, although doing so would likely reduce the chances of encountering an issue.  Prior to mapping, input data is parsed and QC'ed to identify (and optionally filter) related samples, calculate principal components, and perform genomic control matching. A more detailed description of each of these steps is provided at the bottom. 
 
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**
+
+ - [Requirements](#requirements)
+   - [Snakemake](#snakemake)
+   - [Singularity](#singularity)
+ - [Running the workflow](#running-the-workflow)
+ - [Pipeline Overview](#pipeline-overview)
+   - [Input Data](#input-data)
+   - [Data Preparation](#data-preparation)
+     - [Missingness filters](#missingness-filters)
+     - [LD pruning](#ld-pruning)
+     - [IBD filters](#ibd-filters)
+     - [Hardy-Weinberg equilibrium filters](#hardy-weinberg-equilibrium-filters)
+     - [Control Matching  STOPPED HERE](#control-matching--stopped-here)
+   - [Population structure and Kinship](#population-structure-and-kinship)
+   - [Genome Wide Association Mapping (GWAS)](#genome-wide-association-mapping-gwas)
+   - [Admixture Mapping](#admixture-mapping)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
 ## Requirements
  
