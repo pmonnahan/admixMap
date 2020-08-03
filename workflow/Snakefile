@@ -144,7 +144,7 @@ rule all:
 
 rule clean:
     shell:
-        "rm input/*; rm -r plink/*; rm BLINK/*; rm data/*; rm *txt; rm accessory/*"
+        "rm -r input; rm -r plink/*; rm -r data; rm *txt; rm accessory/*"
 
 rule make_rulegraph:
     output: f"{BASE}-rulegraph.png"
