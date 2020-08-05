@@ -13,6 +13,7 @@ This pipeline implements admixture mapping on the output of the [AncInf](https:/
    - [Snakemake](#snakemake)
    - [Singularity](#singularity)
  - [Running the workflow](#running-the-workflow)
+   - [Run Settings](#run-settings)
  - [Pipeline Overview](#pipeline-overview)
    - [Input Data](#input-data)
    - [Data Preparation](#data-preparation)
@@ -20,10 +21,12 @@ This pipeline implements admixture mapping on the output of the [AncInf](https:/
      - [LD pruning](#ld-pruning)
      - [IBD filters](#ibd-filters)
      - [Hardy-Weinberg equilibrium filters](#hardy-weinberg-equilibrium-filters)
-     - [Control Matching  STOPPED HERE](#control-matching--stopped-here)
+     - [Control Matching](#control-matching)
    - [Population structure and Kinship](#population-structure-and-kinship)
    - [Genome Wide Association Mapping (GWAS)](#genome-wide-association-mapping-gwas)
    - [Admixture Mapping](#admixture-mapping)
+   - [Output](#output)
+   - [Conditional Analysis (Optional)](#conditional-analysis-optional)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -43,7 +46,7 @@ Alternatively, you can try installing snakemake via _pip_:
 
 ### Singularity
 
-The installation of the individual programs  used throughout this pipeline can be completely avoid by utilizing a Singularity image.  This image is too large to be hosted on Github, although you can find the definitions file used to create the image [here](https://github.com/pmonnahan/AncInf/blob/master/singularity/Singularity_defs.def).  Building of images is still not currently supported at MSI, so I used a Vagrant virtual machine, which comes with Singularity pre-configured/installed (https://app.vagrantup.com/singularityware/boxes/singularity-2.4/versions/2.4).  I can also share the img file directly upon request.
+The installation of the individual programs used throughout this pipeline can be completely avoided by utilizing a Singularity image.  This image is too large to be hosted on Github, although you can find the definitions file used to create the image [here](https://github.com/pmonnahan/AncInf/blob/master/singularity/Singularity_defs.def).  Building of images is still not currently supported at MSI, so I used a Vagrant virtual machine, which comes with Singularity pre-configured/installed (https://app.vagrantup.com/singularityware/boxes/singularity-2.4/versions/2.4).  I can also share the img file directly upon request.
 
 However, in order to utilize the singularity image, _Singularity_ must be installed on the HPC.  Currently, the pipeline assumes that _Singularity_ will be available as a module and can be loaded into the environment via the command specified in the config.yml file, where it says 'singularity_module'.  The default setting will work for MSI at UMN.
 
@@ -67,19 +70,38 @@ The critical files responsible for executing the pipeline are contained in the *
 * config.yml
 * cluster.yaml  
 
-The **Snakefile** is the primary workhouse of _snakemake_, which specifies the dependencies of various parts of the pipeline and coordinates their submission as jobs to the MSI cluster.  No modifications to the **Snakefile** are necessary.  
+The **Snakefile** is the primary workhouse of _snakemake_, which specifies the dependencies of various parts of the pipeline and coordinates execution.  No modifications to the **Snakefile** are necessary.  
 
-However, in order for the **Snakefile** to locate all of the necessary input and correctly submit jobs to the cluster, **both** the **config.yaml** and **cluster.yaml** need to be modified. Open these files and change the required entries that are indicated with 'MODIFY'.  Other fields do not require modification, although this may be desired given the particulars of the run you wish to implement.  Details on each entry in the config file (e.g. what the program expects in each entry as well as the purpose of the entry) are provided in the _Pipeline Overview_ at the bottom.
+In order for the **Snakefile** to locate all of the necessary input and correctly submit jobs to the cluster, **both** the **config.yaml** and **cluster.yaml** need to be modified. Open these files and change the required entries that are indicated with 'MODIFY'.  Other fields do not require modification, although this may be desired given the particulars of the run you wish to implement.  Details on each entry in the config file (e.g. what the program expects in each entry as well as the purpose of the entry) are provided in the _Pipeline Overview_ at the bottom.
 
-Once these files have been modified, the entire pipeline can be run from within the cloned folder via:
+The entire pipeline can be executed on a local machine (not recommended) or on an HPC, and the **cluster.yaml** file is required only for the latter.  For a local run, change the 'local_run' entry to 'true' under the 'run_settings' section of the config file, and launch snakemake from within the parent directory by the simple command:
+
+    snakemake
+
+However, multiple steps in the pipeline have high resource demands, and so are unlikely to be able to be run locally.  This option exists primarily for testing and troubleshooting, so the remainder of the  documentation assumes that the pipeline will be executed on an HPC.  In order to coordinate the use of the HPC, the following modifications to the snakemake command are required:
 
     snakemake --cluster "qsub -l {cluster.l} -M {cluster.M} -A {cluster.A} -m {cluster.m} -o {cluster.o} -e {cluster.e} -r {cluster.r}" --cluster-config workflow/cluster.yaml -j 32
 
-where -j specifies the number of jobs that can be submitted at once.  
+where -j specifies the number of jobs that can be submitted at once.  Note that the 'qsub' command is specific to the commonly-used PBS scheduler.  To run on a different HPC scheduler, the command would need to be modified accordingly.  For example, to coordinate submission to a slurm scheduler, the following command would be used:
 
-The pipeline is currently set up to run on the _small_ queue on the _mesabi_ cluster, which has a per-user submission limit of 500 jobs.  This is more than enough for the entire pipeline, so running with -n 500 will submit all necessary jobs as soon as possible.  If -j is small (e.g. 32), snakemake will submit the first 32 jobs and then submit subsequent jobs as these first jobs finish.
+    snakemake --cluster "sbatch --no-requeue --time={cluster.time} --mem-per-cpu={cluster.mem-per-cpu} --ntasks={cluster.ntasks} --nodes={cluster.nodes} --mail-user={cluster.mail-user} --mail-type={cluster.mail-type} -o {cluster.o} -e {cluster.e} -A {cluster.A}"" --cluster-config workflow/cluster_yale.yaml -j 32
 
-The attractive feature of _snakemake_ is its ability to keep track of the progress and dependencies of the different stages of the pipeline.  Specifically, if an error is encountered or the pipeline otherwise stops before the final step, _snakemake_ can resume the pipeline where it left off, avoiding redundant computation for previously completed tasks.  
+Note also that a different **cluster.yaml** file is required for the different scheduler.  If you open and inspect the **cluster.yaml** file vs the **cluster_yale.yaml** file, you will see syntax that is specific to PBS and slurm schedulers, respectively.  
+
+One additional change in the **config.yml** is needed in order to correctly submit jobs to the HPC.  The relevant entries are under the 'run_settings' section of the config file:
+
+    run_settings:
+      local_run: 'false'
+      cluster_config: 'workflow/cluster.yaml'
+      scheduler: 'pbs'
+      
+Here, it is necessary that the 'cluster_config' entry is set to the path of the cluster.yaml file that will be used in the snakemake command.  Also, the scheduler must correspond to the syntax used in the snakemake command and cluster.yaml file.  I should point out that these additional changes are needed for responsibly using PLINK within a snakemake framework, and are not directly needed for snakemake.  PLINK will attempt to auto-detect available resources upon running regardless of the resources that were requested when the job was submitted.  Therefore, we have to read and parse the requested resources in the cluster config file in order for them to be communicated to PLINK from within the Snakefile.  
+
+### Other notes
+
+It is recommended that snakemake is run as an interactive session on an HPC.  Snakemake will launch the specified number (via the -j flag) of jobs, and then will hang and wait for them to finish.  As jobs finish (and assuming no errors), snakemake will launch additional jobs keeping the total running jobs at whatever -j is set for.  Although Snakemake should not use a lot of memory, it could have long run times, which is generally not advisable on login nodes.  
+
+One attractive feature of _snakemake_ is its ability to keep track of the progress and dependencies of the different stages of the pipeline.  Specifically, if an error is encountered or the pipeline otherwise stops before the final step, _snakemake_ can resume the pipeline where it left off, avoiding redundant computation for previously completed tasks.  To do so, simply resubmit the original snakemake command.
 
 To run a specific part of the pipeline, do:
 
@@ -87,9 +109,13 @@ To run a specific part of the pipeline, do:
 
 where _rule\_name_ indicates the 'rule' (i.e. job) in the Snakefile that you wish to run.
 
-All output will be contained in the parent directory labelled with the prefix provided in the config file at:
+Also, it is often very helpful to do a 'dry-run' of the pipeline in which the different steps and dependencies are printed to screen, but no actual jobs are executed.  This can be helpful to ensure that config entries are correct, etc.  To perform a dry-run, do:
 
-    outname: "Example" 
+    snakemake -nrp
+    
+#### Debugging and error reports
+
+Should an error be encountered in a job, snakemake will halt the pipeline and indicate in the terminal that an error has occurred.  The offending job will also be printed in red in the terminal window.  More information on why the job failed can be found in the 'stdout' and 'stderr' files that are output to the **'OandE'** directory and will be labelled with the jobname.
 
 ## Pipeline Overview
 
@@ -118,6 +144,8 @@ The first step is to filter out rare variants and variants with high missingness
       mbc_pval: '0.0001' # pvalue threshold for missingness-by-case
       missingness: '0.2' # missingness threshold
       maf: '0.01' # Minor allele frequency threshold
+      
+See the text following '#' for a description of each entry.  
 
 #### LD pruning
 We seek to create a separate dataset for calculating population structure and sample relatedness.  To do so, we create a smaller dataset of well-behaving, independent markers.  To identify such markers, we first subset the data to included only controls and remove variants exhibiting high linkage disequilibrium.
@@ -162,7 +190,7 @@ sHWE parameters in config file:
 
 Only markers that are tested for sHWE will be used for calculating PCs, IBD/IBS, relatedness, etc.  While a full input dataset might contain several million SNPs, only several hundred thousand SNPs are sufficient for making these calculations.  Therefore, the default 'test_threshold' is likely sufficient.
 
-#### Control Matching  STOPPED HERE
+#### Control Matching  
 Control matching is optionally performed for BLINK and admixture mapping.  Logistic models implemented in GENESIS are able to handle highly imbalanced case/control ratios by way of a Saddle-Point Approximation for p-values, so control matching is not necessary.  
 
 Control matching behavior is set by the following lines in the config file:
@@ -170,18 +198,19 @@ Control matching behavior is set by the following lines in the config file:
     match_controls: 'false'
     control_number: '4'
 
-If 'true', then PLINK's \href{http://www.cog-genomics.org/plink/1.9/strat}{{\color{blue}{\underline{control matching program}}}} was implemented while requested the following number of controls to be retained per case sample (via -mcc flag):
-```{r, ctrl_num, warning=FALSE, message=FALSE}
-yaml$control_number
-```
+If 'match_controls' is set to 'true', then PLINK's [control matching](http://www.cog-genomics.org/plink/1.9/strat) feature, will be implemented such that a number of control samples will be retained for each case sample (via -mcc flag).  The number of retained controls (per case sample) is specified with the 'control_number' entry in the config file.
 
-The retained samples can be found here:
-```{r, matched_samples, warning=FALSE, message=FALSE}
-paste(getwd(), str_replace(params$fam_file, "_sub", "_CtlMat"), sep="/")
-```
+The retained samples can be found in the 'accessory' directory that is created at:
 
+    accessory/samples.txt
 
 ### Population structure and Kinship
+
+Using the sHWE-passing SNPs explained above, a first-pass kinship matrix is calculated via [KING](http://people.virginia.edu/~wc9c/KING/manual.html), which is designed to be robust in the face of population structure.  Then, these kinship estimates along with the SNP genotypes are used to calculate ancestry-informative PCs via [PC-AiR](https://rdrr.io/bioc/GENESIS/man/pcair.html). The basic idea behind PC-AiR is to calculate PCs using only unrelated individuals and then use the resulting eigenvectors/values to project PC values for the related individuals that had been excluded.  The (un)related individuals identified by PC-AiR are output to files ending in '.unrels' and '.rels' in the main directory.
+    
+A genetic-relatedness matrix (GRM) is then calculated via [PCRelate](https://www.rdocumentation.org/packages/GENESIS/versions/2.2.2/topics/pcrelate), which 'accounts for population structure (ancestry) among sample individuals through the use of ancestry representative principal components (PCs)'. 
+
+Additional information on the PCs and GRM can be found in the PDF report that is automatically generated at the end of the pipeline.
     
 ### Genome Wide Association Mapping (GWAS)
 GWAS is performed via two softwares: [BLINK](http://zzlab.net/blink) and [GENESIS](https://github.com/UW-GAC/GENESIS).  BLINK implements a novel multi-locus methodology that is fast, capable of handling large datasets, and claims greater statistical power.  However, the program is incapable of generating coefficient estimates necessary for calculating odds ratios, polygenic risk scores, etc.  GENESIS scales poorly with sample size, but is well-documented, written in R (and thus more transparent), and provides much more detailed output.
@@ -198,24 +227,62 @@ Association Mapping settings in config.yml:
       other_predictors: 'sex' # Covariates to be used in GWAS.
       blink_dir: "/usr/local/bin/BLINK" # Do not change
 
-See the text following '#' for a description of each entry.  For the 'other_predictors' entry, the 'sex' info is taken from the .fam file specified in the 'query' entry of the config file.  Additional covariates can be listed here, but they must be provided in a separate file whose path is provided at the following entry.
+For the 'other_predictors' entry, the 'sex' info is taken from the .fam file specified in the 'query' entry of the config file.  Additional covariates can be listed here, but they must be provided in a separate file whose path is provided at the following entry.
 
     covariate_file: 'none' 
     
  This file should be tab-delimited file with a header line specifying names of covariates (excluding sex) that are listed in the 'covars' entry.  First column MUST be labeled with 'taxa' and should contain sample IDs EXACTLY as they are specified in input plink files.  Note that this feature has not been tested.
 
 ### Admixture Mapping
-For the admixture mapping, this pipeline takes, as input, the output of the [RFMix](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3738819/) ancestry inference program. The model used for admixture mapping is taken from [Grinde et al 2019](https://www.cell.com/ajhg/pdfExtended/S0002-9297(19)30008-4).  In short, for every genomic window a general linear model (generalized, in the case of case/control phenotypes) is fit with the local ancestry state as the predictor variable with global ancestry (or admixture proportions) as a covariate.  For every ancestry of interest, a separate model is fit for each ancestry listed in the config.yml file at .  Note that the acronyms 
+For the admixture mapping, this pipeline takes, as input, the output of the [RFMix](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3738819/) ancestry inference program. The model used for admixture mapping is taken from [Grinde et al 2019](https://www.cell.com/ajhg/pdfExtended/S0002-9297(19)30008-4).  In short, for every genomic window a general linear model (generalized, in the case of case/control phenotypes) is fit with the local ancestry state as the predictor variable with global ancestry (or admixture proportions) as a covariate.  For every ancestry of interest, a separate model is fit for each ancestry listed in the config.yml file at 'ancestry_predictors'.  Note that the acronyms used here must exactly match those specified in the RFMix output.  
 
 Admixture Mapping settings in config.yml:
 
     admixMapping:
         skip: 'false' # Skip admixture mapping entirely
         rfmix: "OUTPUT_DIRECTORY_OF RFMIX" # MODIFY; can be left alone if 'skip' is set to 'false'
+        ancestry_predictors: 'AFR,EUR,AMR' # No spaces!
+        other_predictors: 'sex'
         gen_since_admixture: '8'
         cores: '12'
         
 The 'gen_since_admixture' entry specifies the generations since admixture began parameter that was used in the ancestry inference procedure.  This is a required parameter in RFMix, but is also used to determine the appropriate significance threshold for admixture mapping (see below).  '8' is the value frequently used in the literature for inferring local ancestry in African-American populations.  It is recommended that one either consults the literature to find a suitable value for the particular admixture scenario represented in the data.  Or, the STEAM package (see below) can be used to empirically estimate this value from the data (although I have not tested this).  
         
 The Grinde et al 2019 paper also provides a framework and software (called [STEAM](https://github.com/kegrinde/STEAM)) for determining an appropriate significance threshold for multiple test correction. It is based on the genetic positions of the tested windows, the average ancestry of each individual, and the number of generations since admixture began.  
+
+### Output
+
+All output will be contained in the parent directory labelled with the prefix provided in the config file at:
+
+    outname: "Example" 
+ 
+ The table below provides a list of results and the corresponding file suffix.
+    
+| Result  | Suffix |
+| ------------- | ------------- |
+| GENESIS GWAS  | .genesis.txt  |
+| BLINK GWAS  | .blink.txt  |
+| Admixture Mapping  | .admixmap.txt  |
+| PC-AiR Variance Proportions  | .pcair.varprop  |
+| Phenotype Data  | .genesis.pdat  |
+| PC-AiR Related Samples  | .pcair.rels  |
+| PC-AiR Unrelated Samples  | .pcair.unrels  |
+
+Additionally, a report summarizing much of the intermediate and final results is produced at the end of the pipeline and will end with the suffix 'Mapping-report.pdf'.  Figures in this report are also saved in the 'figures' directory that is created.
+
+Lastly, SNPs whose p-value was below that specified at the 'sig_threshold' entry under 'gwas' are annotated via [SnpEff](http://snpeff.sourceforge.net/SnpEff_manual.html).  The annotated files end in 'sig.annt.txt'.  The SNPs are also annotated with the rsID using the key that is provided in the config file at:
+
+    annotation:
+        rsIDs: "/home/spectorl/pmonnaha/misc/hg19_rsID_key.txt"
+
+This file should be a PLINK-formatted bim file containing the rsIDs.  I have already generated this file for hg19 rsIDs and can share this file upon request.
+
+### Conditional Analysis (Optional)
+
+An optional final step is to perform conditional analyses to locally search for additional significant variants after controlling for the effects of a particular marker.  
+
+    conditional_analysis:
+        snp_list: 'none'
+        distance: '100000'
+
 

@@ -126,12 +126,17 @@ def calc_marker_test_coverage(file):
     return(rounds)
 
 def check_marker_coverage(wildcards):
+    shell(f"cat plink/DS/{BASE}_LDprune_ctrls_DS*.bim | sort | uniq > accessory/sHWE_downsampled_snps.txt")
     rounds = calc_marker_test_coverage('accessory/sHWE_downsampled_snps.txt')
     if rounds: input_list = expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round = rounds)
     else: input_list = glob.glob(f"plink/DS/{BASE}_LDprune_ctrls_DS*.txt")
     return(input_list)
 
 def check_marker_coverage2(wildcards):
+    file_list = [x for x in glob.glob(f"plink/DS/{BASE}_LDprune_ctrls_DS*.bim")
+                     if os.path.exists(f"sHWE/{BASE}_sHWE-DS{int(x.strip('.bim').replace('DS', '').split('_')[-1])}.rmv.bim")]
+    # NEED TO loop over LDprune_ctrls_DS*.bim and CHECK IF sHWE-DSXXX.rmv.bim exists before adding it to a cat string.
+    shell(f"cat {' '.join(file_list)} | cut -d \" \" -f 2 | sort | uniq > accessory/sHWE_tested_snps.txt")
     rounds = calc_marker_test_coverage('accessory/sHWE_tested_snps.txt')
     if rounds: input_list = expand(f"sHWE/{BASE}_sHWE-DS{{round}}", round = rounds)
     else: input_list = glob.glob(f"sHWE/{BASE}_sHWE-DS*")
@@ -243,9 +248,8 @@ rule downsample_controls:
 
 checkpoint check_markers_downsampled:
     input: check_marker_coverage
-    output: "accessory/sHWE_downsampled_snps.txt", "accessory/.sHWE_downsample_pass.txt"
+    output: "accessory/.sHWE_downsample_pass.txt"
     run:
-        shell(f"cat plink/DS/{BASE}_LDprune_ctrls_DS*.bim | sort | uniq > accessory/sHWE_downsampled_snps.txt")
         with open('accessory/sHWE_downsampled_snps.txt', 'r') as tested:
             for num_tested, line in enumerate(tested): pass
         if num_tested < int(config['sHWE']['test_threshold']):
@@ -300,19 +304,6 @@ checkpoint check_markers_tested:
     input: check_marker_coverage2
     output: "accessory/.sHWE_pass.txt"
     run:
-        # glob_list = glob.glob(f"sHWE/{BASE}_sHWE-DS*.rmv.bim")
-        # marker_list, ds_max = calc_marker_test_coverage(glob_list)
-        # if len(marker_list) < int(config['sHWE']['test_threshold']):
-        #     print(f"Failed Checkpoint\nReason: Fewer than {config['sHWE']['test_threshold']} unique SNPs TESTED for sHWE\n"
-        #           f"Relaunch snakemake to run an additional {config['sHWE']['downsample_rounds']} rounds of downsampling followed by testing.\n"
-        #           f"This value can be adjusted in config.yml")
-        # else:
-        #     shell('touch accessory/.sHWE_pass.txt')
-        file_list = [x for x in glob.glob(f"plink/DS/{BASE}_LDprune_ctrls_DS*.bim")
-                     if os.path.exists(f"sHWE/{BASE}_sHWE-DS{int(x.strip('.bim').replace('DS', '').split('_')[-1])}.rmv.bim")]
-        # NEED TO loop over LDprune_ctrls_DS*.bim and CHECK IF sHWE-DSXXX.rmv.bim exists before adding it to a cat string.
-        shell(f"cat {' '.join(file_list)} | cut -d \" \" -f 2 | sort | uniq > accessory/sHWE_tested_snps.txt")
-        shell(f"cp accessory/sHWE_tested_snps.txt accessory/sHWE_tested_snps2.txt")
         with open('accessory/sHWE_tested_snps.txt', 'r') as tested:
             for num_tested, line in enumerate(tested): pass
         if num_tested < int(config['sHWE']['test_threshold']):

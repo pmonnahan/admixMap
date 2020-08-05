@@ -285,7 +285,7 @@ nrow(shwe)
 
 ## Population structure and Kinship
 
-The unrelated samples used in PC calculation (via PC-AiR) can be found here:
+The unrelated samples used in PC calculation (via \href{https://rdrr.io/bioc/GENESIS/man/pcair.html}{{\color{blue}{\underline{PC-AiR}}}}; see 'Results' -> 'GWAS' -> 'GENESIS' for more details) can be found here:
 ```{r PCair-unrelateds}
 paste(getwd(), str_replace(params$eigenval, "varprop", "unrels"), sep = "/")
 ```
@@ -316,7 +316,7 @@ for (i in 1:as.numeric(yaml$gwas$pc_num)){
 }
 ```
 
-Kinship was recalculated via PCRelate, resulting in the following distribution of pairwise kinship values (y-axis):
+Kinship was recalculated via \href{https://www.rdocumentation.org/packages/GENESIS/versions/2.2.2/topics/pcrelate}{{\color{blue}{\underline{PC-Relate}}}}, resulting in the following distribution of pairwise kinship values (y-axis):
 ```{r, fig.height = 4, fig.width = 4, fig.cap = "Pairwise kinship plotted vs the probability that the pair of individuals have 0 alleles IBD at a random site on the genome (k0)", warning=FALSE, message=FALSE}
 knitr::include_graphics(normalizePath(params$kinplot))
 ```
