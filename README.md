@@ -1,6 +1,3 @@
-
-
-
 # Admixture and association mapping pipeline
 
 This pipeline implements admixture mapping on the output of the [AncInf](https://github.com/pmonnahan/AncInf) pipeline (i.e. RFMix output) and/or association mapping on the output of the [pre-imputation](https://github.com/pmonnahan/DataPrep) or [post-imputation](https://github.com/pmonnahan/DataPrep/postImpute) QC pipelines.  It is not completely necessary to generate the input via the mentioned pipelines, although doing so would likely reduce the chances of encountering an issue.  Prior to mapping, input data is parsed and QC'ed to identify (and optionally filter) related samples, calculate principal components, and perform genomic control matching. A more detailed description of each of these steps is provided at the bottom. 
@@ -13,7 +10,8 @@ This pipeline implements admixture mapping on the output of the [AncInf](https:/
    - [Snakemake](#snakemake)
    - [Singularity](#singularity)
  - [Running the workflow](#running-the-workflow)
-   - [Run Settings](#run-settings)
+   - [Other Notes](#other-notes)
+    - [Debugging and error reports](#debugging-and-error-reports)
  - [Pipeline Overview](#pipeline-overview)
    - [Input Data](#input-data)
    - [Data Preparation](#data-preparation)
@@ -285,4 +283,10 @@ An optional final step is to perform conditional analyses to locally search for 
         snp_list: 'none'
         distance: '100000'
 
+The 'snp_list' entry should specify a file path containing one marker ID (chr:position) per line.  One possibility is to use the 'significant' markers that were annotated at the final step.  For each SNP in the file, the program will perform a GWAS for all SNPs within the specified 'distance' on either side.  Importantly, the genotypes at the focal SNP are included as an additional covariate.
 
+In order to run this step you must explicitly request the output via:
+
+    snakemake conditional-analysis/<outname>.conditional-analysis.genesis.txt --cluster "qsub -l {cluster.l} -M {cluster.M} -A {cluster.A} -m {cluster.m} -o {cluster.o} -e {cluster.e} -r {cluster.r}" --cluster-config workflow/cluster.yaml -j 1
+
+ , where 'outname' should be replaced by the value in the 'outname' entry in the config file.  
