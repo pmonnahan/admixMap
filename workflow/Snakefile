@@ -7,6 +7,8 @@ import shutil
 import pandas as pd
 import scipy.stats
 import yaml
+import random
+import copy
 
 # Get the date
 from datetime import datetime
@@ -96,7 +98,7 @@ def get_dataprep_input(wildcards):
 
 def get_report_input(wildcards):
     input_list = [f"{BASE}.blink.txt", f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt"]
-    if config['admixMapping']['skip'] != 'true': input_list.append(f"{BASE}.admixmap.txt")
+    if config['admixMapping']['skip'] != 'true': input_list += [f"{BASE}.admixmap.txt", f"{BASE}.globalancestry.txt"]
     return(input_list)
 
 def get_conditional_analysis_input(wildcards):
@@ -111,38 +113,6 @@ def plnk_rsrc(rule_name, plink_specs):
     try: resources = plink_specs[rule_name]
     except KeyError: resources = plink_specs['__default__']
     return(resources)
-
-def calc_marker_test_coverage(file):
-    rounds = []
-    if not os.path.exists(file):
-        rounds = [x for x in range(0,int(config['sHWE']['downsample_rounds']))]
-    else:
-        num_tested = 0
-        with open(file, 'r') as lines:
-            for line in lines: num_tested += 1
-        if num_tested < int(config['sHWE']['test_threshold']):
-            curr_ds = max([ int(file.strip('.txt').replace('DS', '').split('_')[-1]) for file in glob.glob(f'plink/DS/{BASE}_LDprune_ctrls_DS*.txt')]) + 1
-            rounds = [x for x in range(curr_ds + 1, curr_ds + int(config['sHWE']['downsample_rounds']) + 1)]
-    return(rounds)
-
-def check_marker_coverage(wildcards):
-    if glob.glob(f"plink/DS/{BASE}_LDprune_ctrls_DS*.bim"):
-        shell(f"cat plink/DS/{BASE}_LDprune_ctrls_DS*.bim | sort | uniq > accessory/sHWE_downsampled_snps.txt")
-    rounds = calc_marker_test_coverage('accessory/sHWE_downsampled_snps.txt')
-    if rounds: input_list = expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round = rounds)
-    else: input_list = glob.glob(f"plink/DS/{BASE}_LDprune_ctrls_DS*.txt")
-    return(input_list)
-
-def check_marker_coverage2(wildcards):
-    file_list = [x for x in glob.glob(f"plink/DS/{BASE}_LDprune_ctrls_DS*.bim")
-                     if os.path.exists(f"sHWE/{BASE}_sHWE-DS{int(x.strip('.bim').replace('DS', '').split('_')[-1])}.rmv.bim")]
-    # NEED TO loop over LDprune_ctrls_DS*.bim and CHECK IF sHWE-DSXXX.rmv.bim exists before adding it to a cat string.
-    if file_list: shell(f"cat {' '.join(file_list)} | cut -d \" \" -f 2 | sort | uniq > accessory/sHWE_tested_snps.txt")
-    rounds = calc_marker_test_coverage('accessory/sHWE_tested_snps.txt')
-    if rounds: input_list = expand(f"sHWE/{BASE}_sHWE-DS{{round}}", round = rounds)
-    else: input_list = glob.glob(f"sHWE/{BASE}_sHWE-DS*")
-    return(input_list)
-
 
 #### DEFINE RULES FOR PIPELINE EXECUTION #####
 rule all:
@@ -236,8 +206,7 @@ rule IBD_filter_ctrls:
 rule generate_downsample_controls:
     input: f"plink/{BASE}_LDp_ctrls_IBDflt.bed"
     output: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.txt"
-    run:
-        shell(f"{CMD_PREFIX} shuf -n {config['sHWE']['downsample_number']} plink/{BASE}_LDp_ctrls_IBDflt.fam > plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt")
+    shell: f"{CMD_PREFIX} shuf -n {config['sHWE']['downsample_number']} plink/{BASE}_LDp_ctrls_IBDflt.fam > plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt"
 
 rule downsample_controls:
     input: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.txt"
@@ -246,16 +215,21 @@ rule downsample_controls:
         shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_ctrls_IBDflt --keep plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt --maf {config['sHWE']['maf']} "
               f"--geno 0.0 --keep-allele-order --make-bed --out plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}} {plnk_rsrc(rule, plink_run_specs)}")
 
-checkpoint check_markers_downsampled:
-    input: check_marker_coverage
+rule calc_downsampled_coverage:
+    input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round = range(0, int(config['sHWE']['downsample_rounds'])))
+    output: "accessory/sHWE_downsampled_snps.txt"
+    shell: f"cat plink/DS/{BASE}_LDprune_ctrls_DS*.bim | sort | uniq > accessory/sHWE_downsampled_snps.txt"
+
+rule downsample_checkpoint:
+    input: "accessory/sHWE_downsampled_snps.txt"
     output: "accessory/.sHWE_downsample_pass.txt"
     run:
         with open('accessory/sHWE_downsampled_snps.txt', 'r') as tested:
             for num_tested, line in enumerate(tested): pass
         if num_tested < int(config['sHWE']['test_threshold']):
             print(f"Failed Checkpoint\nReason: Fewer than {config['sHWE']['test_threshold']} unique SNPs downsampled for sHWE\n"
-                  f"Relaunch snakemake to run an additional {config['sHWE']['downsample_rounds']} rounds of downsampling.\n"
-                  f"This value can be adjusted in config.yml")
+                  f"Increase the value set for \'downsample_rounds\' entry in the \'sHWE\' section of the config file")
+            shell("cp accessory/sHWE_downsampled_snps.txt accessory/.sHWE_downsampled_snps.txt; rm accessory/sHWE_downsampled_snps.txt")
         else:
             shell('touch accessory/.sHWE_downsample_pass.txt')
 
@@ -291,25 +265,35 @@ rule extract_optimum_popnum:
         with open("sHWE/.optimum_popnum.txt", 'w') as outfile: outfile.write(str(best_popnum))
 
 rule structHWE:
-    input: "sHWE/entropy.txt", f"sHWE/.optimum_popnum.txt", f"accessory/.sHWE_downsample_pass.txt"
-    output: f"sHWE/{BASE}_sHWE-DS{{f}}", f"sHWE/{BASE}_sHWE-DS{{f}}.rmv.bim"
+    input: f"plink/DS/{BASE}_LDprune_ctrls_DS{{f}}.bed", f"sHWE/.optimum_popnum.txt", "sHWE/entropy.txt"
+    output: f"sHWE/{BASE}_sHWE-DS{{f}}"
     params: threshold = config['sHWE']['threshold']
     run:
         popfile = open(f"sHWE/.optimum_popnum.txt", 'r')
         popnum = popfile.readline()
         popfile.close()
-        shell(f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.f}} -d {popnum} -t {{params.threshold}} -o sHWE/{BASE}_sHWE-DS{{wildcards.f}}")
+        shell(f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.f}} -d {popnum} -t {{params.threshold}} -o sHWE/{BASE}_sHWE-DS{{wildcards.f}} || touch sHWE/{BASE}_sHWE-DS{{wildcards.f}}")
 
-checkpoint check_markers_tested:
-    input: check_marker_coverage2
+rule calc_test_coverage:
+    input: expand(f"sHWE/{BASE}_sHWE-DS{{round}}", round = range(0, int(config['sHWE']['downsample_rounds'])))
+    output: 'accessory/sHWE_tested_snps.txt'
+    run:
+        file_list = [x for x in glob.glob(f"plink/DS/{BASE}_LDprune_ctrls_DS*.bim")
+                     if os.path.exists(f"sHWE/{BASE}_sHWE-DS{int(x.strip('.bim').replace('DS', '').split('_')[-1])}.rmv.bim")]
+        with open('accessory/.tested_file_list.txt', 'w') as tested:
+            for file in file_list: tested.write(f"{file}\n")
+        if file_list: shell(f"find plink/DS/ -name \'{BASE}_LDprune_ctrls_DS*.bim\' | grep -v -w accessory/.tested_file_list.txt | xargs cat | cut -d \" \" -f 2 | sort | uniq > accessory/sHWE_tested_snps.txt")
+
+rule check_markers_tested:
+    input: 'accessory/sHWE_tested_snps.txt'
     output: "accessory/.sHWE_pass.txt"
     run:
         with open('accessory/sHWE_tested_snps.txt', 'r') as tested:
             for num_tested, line in enumerate(tested): pass
         if num_tested < int(config['sHWE']['test_threshold']):
             print(f"Failed Checkpoint\nReason: Only {num_tested} markers were tested for sHWE, which is fewer than requested threshold ({config['sHWE']['test_threshold']})\n"
-                  f"Relaunch snakemake to run an additional {config['sHWE']['downsample_rounds']} rounds of downsampling followed by testing.\n"
-                  f"This value as well as the threshold can be adjusted in config.yml")
+                  f"Increase the value set for \'downsample_rounds\' entry in the \'sHWE\' section of the config file")
+            shell("cp accessory/sHWE_tested_snps.txt accessory/.sHWE_tested_snps.txt; rm accessory/sHWE_tested_snps.txt; rm accessory/sHWE_downsampled_snps.txt")
         else:
             shell('touch accessory/.sHWE_pass.txt')
 
@@ -430,13 +414,11 @@ rule make_report:
             report_line = f"echo \'rmarkdown::render(\"scripts/admixMap-report.Rmd\", output_file=\"{BASE}-Mapping-report.pdf\", " \
                           f"params=list(genesis_rslt=\"{BASE}.genesis.txt\", " \
                           f"blink_rslt=\"{BASE}.blink.txt\", " \
-                          f"global_ancestry=\"{BASE}.globalancestry.txt\", " \
                           f"fam_file=\"plink/{BASE}_sub_mflt.fam\", " \
                           f"input_directory=\"input/\", " \
                           f"gen_since_admix=\"{config['admixMapping']['gen_since_admixture']}\", " \
                           f"gwas_threshold=\"{config['gwas']['sig_threshold']}\", " \
                           f"ancestry_comps=\"{config['admixMapping']['ancestry_predictors']}\", " \ 
-                          f"stats_file=\"{BASE}.admixmap.txt\", " \
                           f"pruned_bim=\"plink/{BASE}_LDp_sHWE.bim\", " \
                           f"sHWE_entropy=\"sHWE/entropy.txt\", " \
                           f"sHWE_markers=\"accessory/sHWE_tested_snps.txt\", " \
@@ -445,8 +427,11 @@ rule make_report:
                           f"phenodat=\"{BASE}.genesis.pdat\", " \
                           f"kinplot=\"{BASE}.kinplot.png\", " \
                           f"rulegraph_file=\"{BASE}-rulegraph.png\", "
-            if config['admixMapping']['skip'] != 'true': report_line += f"admixMap_rslt=\"{BASE}.admixmap.txt\", "
-            else: report_line += f"admixMap_rslt=\"-9\", "
+            if config['admixMapping']['skip'] != 'true':
+                report_line += f"admixMap_rslt=\"{BASE}.admixmap.txt\", global_ancestry=\"{BASE}.globalancestry.txt\","
+            else:
+                report_line += f"admixMap_rslt=\"-9\", global_ancestry=\"-9\","
+                shell(f"touch {BASE}.admixmap.sig.txt")
             report_line += f"config_file=\"workflow/config.yml\"))\' | R --vanilla"
             report_cmds.write(report_line)
         shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf; mv *kinplot.png figures")
@@ -493,3 +478,17 @@ rule combine_conditional_analysis:
         f"head -q -n 1 conditional-analysis/*genesis.txt | uniq | " \
         "awk '{{printf(\"marker_covar\\t%s\\n\", $0}}' > conditional-analysis/head.txt; " \
         f"cat conditional-analysis/head.txt conditional-analysis/tail.txt > {{output}}"
+
+rule polygenic_scores:
+    input: f"{BASE}.genesis.txt"
+    output: f"PRS/{BASE}.prs.txt"
+    run:
+        if not os.path.exists('PRS'): os.mkdir('PRS')
+        if os.path.exists(config['polygenic_scores']['snp_list']):
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {config['polygenic_scores']['snp_list']} --keep-allele-order --allow-no-sex --recodeAD --out PRS/PRS_genotypes {plnk_rsrc(rule, plink_run_specs)} || true")
+            shell(f"head -n 1 {BASE}.genesis.txt > PRS/head.txt; grep -f {config['polygenic_scores']['snp_list']} {BASE}.genesis.txt > PRS/body.txt")
+            shell(f"cat PRS/head.txt PRS/body.txt > PRS/PRS_betas.txt; rm PRS/head.txt; rm PRS/body.txt")
+            shell(f"{CMD_PREFIX} Rscript scripts/PRS.R -g PRS/PRS_genotypes.raw -b PRS/PRS_betas.txt -o PRS/{BASE}")
+        else:
+            print("Did not find snp_list")
+

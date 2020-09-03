@@ -17,7 +17,6 @@ params:
   fam_file: NA
   gen_since_admix: NA
   sHWE_markers: NA
-  stats_file: NA
   pruned_bim: NA
   ibd_ctrls: NA
   sHWE_entropy: NA
@@ -62,6 +61,7 @@ knitr::knit_hooks$set( output = function(x, options) {
 
 knitr::opts_template$set("kill_prefix"=list(comment=NA, null_prefix=TRUE))
 knitr::opts_chunk$set(opts.label="kill_prefix")
+options(dplyr.summarise.inform=F)
 ```
 
 ```{r dependencies, include=FALSE}
@@ -123,12 +123,15 @@ gen = read.table(params$genesis_rslt, header = T)
 blink = read.table(params$blink_rslt, header = T)
 if (params$admixMap_rslt != "-9"){
   adm = read.table(params$admixMap_rslt, header = T)
-}
+  anc = read.table(params$global_ancestry, header=T)
+  ancpre = strsplit(params$ancestry_comps, ",")[[1]]
+} 
+
 pbim = read.table(params$pruned_bim)
-anc = read.table(params$global_ancestry, header=T)
+
 Gens = as.numeric(params$gen_since_admix)
 
-ancpre = strsplit(params$ancestry_comps, ",")[[1]]
+
 
 gwas_thresh = as.numeric(params$gwas_threshold)
 
@@ -260,6 +263,7 @@ The other main limitation to the program is that it does not allow any missing d
 
 In this case, the pipeline generated:
 ```{r sHWE-downsampling-rounds}
+#THIS IS NOT ROBUST TO WHEN THESE VALUES ARE CHANGED UPON RERUNNING
 yaml$sHWE$downsample_rounds
 ```
 
@@ -268,7 +272,7 @@ downsampled datasets, each containing:
 ```{r sHWE-downsampling-inds}
 yaml$sHWE$downsample_number
 ```
-individuals.  
+individuals.  Note that the 'downsample rounds' value is retrieved from the config file, and thus may not reflect the actual number of downsampling rounds if this entry was changed at any point prior to completion of the pipeline.  
 
 Using lower numbers of individuals in each downsampled subset will increase the likelihood that any one marker will have complete genotype information, but going too low will not provide a reliable sample of the larger control population.  It is recommended that the user decide on an acceptable downsample size and increase the number of downsampling rounds until the desired number or proportion of markers are tested.
 
@@ -307,10 +311,10 @@ eigval %>% ggplot(aes(x = PC, y = VarianceProportion)) + geom_bar(stat="identity
 
 PC plots:
 ```{r plink-pcplots, fig.height = 4, fig.width = 4, fig.cap = "Pairwise PC plots (via PC-AiR) for the number of PCs used in GWAS", warning=FALSE, message=FALSE}
-for (i in 1:as.numeric(yaml$gwas$pc_num)){
+for (i in 1:(as.numeric(yaml$gwas$pc_num) - 1)){
   for (j in (i+1):as.numeric(yaml$gwas$pc_num)){
-    xvar = paste0(".$PC",i)
-    yvar = paste0(".$PC",j)
+    xvar = paste0("PC",i)
+    yvar = paste0("PC",j)
     pdat %>% mutate(Pheno = as.character(pheno)) %.>% print(ggplot(data = .,aes_string(x=xvar,y=yvar,color='sex',shape='Pheno')) + geom_point(alpha = 0.5))
   }
 }
@@ -449,25 +453,31 @@ dev.off()
 ## Admixture Mapping
 
 ```{r, fig.height = 4, fig.width = 4, fig.cap = "Quantile-Quantile (QQ) plot for a random sample of (500k) p-values for an effect of local ancestry", warning=FALSE, message=FALSE}
-for (i in 1:length(ancpre)){
-  adm %>% filter(anc==ancpre[i] & !is.na(ANC.p.value)) %.>% print(gg_qqplot(.$ANC.p.value, ancpre[i]))
+if (params$admixMap_rslt != "-9"){
+  for (i in 1:length(ancpre)){
+    adm %>% filter(anc==ancpre[i] & !is.na(ANC.p.value)) %.>% print(gg_qqplot(.$ANC.p.value, ancpre[i]))
+  }
 }
 ```
 
 ```{r, fig.height = 4, fig.width = 7, fig.cap = "Manhattan plot of log(10) of p-values produced from the BLINK program", warning=FALSE, message=FALSE}
-knitr::opts_chunk$set(dev = 'png')
-for (i in 1:length(ancpre)){
-  print(ancpre[i])
-  adm %>% filter(anc==ancpre[i] & !is.na(ANC.p.value)) %>% mutate(Chr = as.numeric(chm)) %>% arrange(Chr) %.>% manhattanPlot(.$ANC.p.value, .$chm, signif = adm_thresh)
+if (params$admixMap_rslt != "-9"){
+  knitr::opts_chunk$set(dev = 'png')
+  for (i in 1:length(ancpre)){
+    print(ancpre[i])
+    adm %>% filter(anc==ancpre[i] & !is.na(ANC.p.value)) %>% mutate(Chr = as.numeric(chm)) %>% arrange(Chr) %.>% manhattanPlot(.$ANC.p.value, .$chm, signif = adm_thresh)
+  }
 }
 ```
 
 
 ```{r, include=F}
-for (i in 1:length(ancpre)){
-  png(paste0("figures/admixMap.",ancpre[i], ".mnht.png"))
-  adm %>% filter(anc==ancpre[i] & !is.na(ANC.p.value)) %.>% manhattanPlot(.$ANC.p.value, .$chm, signif = adm_thresh)
-  dev.off()
+if (params$admixMap_rslt != "-9"){
+  for (i in 1:length(ancpre)){
+    png(paste0("figures/admixMap.",ancpre[i], ".mnht.png"))
+    adm %>% filter(anc==ancpre[i] & !is.na(ANC.p.value)) %.>% manhattanPlot(.$ANC.p.value, .$chm, signif = adm_thresh)
+    dev.off()
+  }
 }
 ```
 
@@ -487,7 +497,7 @@ for (i in 1:length(ancpre)){
 
 ```{r rfmix-chrom.plots, include=FALSE}
 # Consider adding centromere locations
-if (adm != "-9"){
+if (params$admixMap_rslt != "-9"){
   files = list.files(params$input_directory, pattern = ".dat")
   for (f in 1:length(files)){
     in_name = paste(params$input_directory, files[f], sep = "/")

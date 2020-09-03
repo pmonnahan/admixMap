@@ -62,17 +62,17 @@ Clone this repository to the location where you want to store the output of the 
     git clone https://github.com/pmonnahan/AncInf.git rfmix_test
     cd rfmix_test
     
-The critical files responsible for executing the pipeline are contained in the *./workflow* subdirectory contained within the cloned repo.  They are: 
+The critical files responsible for executing the pipeline are contained in the _./workflow_ subdirectory contained within the cloned repo.  They are: 
 
 * Snakefile
 * config.yml
 * cluster.yaml  
 
-The **Snakefile** is the primary workhouse of _snakemake_, which specifies the dependencies of various parts of the pipeline and coordinates execution.  No modifications to the **Snakefile** are necessary.  
+The _Snakefile_ is the primary workhouse of snakemake, which specifies the dependencies of various parts of the pipeline and coordinates execution.  No modifications to the _Snakefile_ are necessary.  
 
-In order for the **Snakefile** to locate all of the necessary input and correctly submit jobs to the cluster, **both** the **config.yaml** and **cluster.yaml** need to be modified. Open these files and change the required entries that are indicated with 'MODIFY'.  Other fields do not require modification, although this may be desired given the particulars of the run you wish to implement.  Details on each entry in the config file (e.g. what the program expects in each entry as well as the purpose of the entry) are provided in the _Pipeline Overview_ at the bottom.
+In order for the _Snakefile_ to locate all of the necessary input and correctly submit jobs to the cluster, **both** the _config.yaml_ and _cluster.yaml_ need to be modified. Open these files and change the required entries that are indicated with 'MODIFY'.  Other fields do not require modification, although this may be desired given the particulars of the run you wish to implement.  Details on each entry in the config file (e.g. what the program expects in each entry as well as the purpose of the entry) are provided in the _Pipeline Overview_ at the bottom.
 
-The entire pipeline can be executed on a local machine (not recommended) or on an HPC, and the **cluster.yaml** file is required only for the latter.  For a local run, change the 'local_run' entry to 'true' under the 'run_settings' section of the config file, and launch snakemake from within the parent directory by the simple command:
+The entire pipeline can be executed on a local machine (not recommended) or on an HPC, and the _cluster.yaml_ file is required only for the latter.  For a local run, change the `local_run` entry to `true` under the `run_settings` section of the config file, and launch snakemake from within the parent directory by the simple command:
 
     snakemake
 
@@ -84,22 +84,22 @@ where -j specifies the number of jobs that can be submitted at once.  Note that 
 
     snakemake --cluster "sbatch --no-requeue --time={cluster.time} --mem-per-cpu={cluster.mem-per-cpu} --ntasks={cluster.ntasks} --nodes={cluster.nodes} --mail-user={cluster.mail-user} --mail-type={cluster.mail-type} -o {cluster.o} -e {cluster.e} -A {cluster.A}"" --cluster-config workflow/cluster_yale.yaml -j 32
 
-Note also that a different **cluster.yaml** file is required for the different scheduler.  If you open and inspect the **cluster.yaml** file vs the **cluster_yale.yaml** file, you will see syntax that is specific to PBS and slurm schedulers, respectively.  
+Note also that a different _cluster.yaml_ file is required for the different scheduler.  If you open and inspect the _cluster.yaml_ file vs the _cluster_yale.yaml_ file, you will see syntax that is specific to PBS and slurm schedulers, respectively.  
 
-One additional change in the **config.yml** is needed in order to correctly submit jobs to the HPC.  The relevant entries are under the 'run_settings' section of the config file:
+One additional change in the _config.yml_ is needed in order to correctly submit jobs to the HPC.  The relevant entries are under the `run_settings` section of the config file:
 
     run_settings:
       local_run: 'false'
       cluster_config: 'workflow/cluster.yaml'
       scheduler: 'pbs'
       
-Here, it is necessary that the 'cluster_config' entry is set to the path of the cluster.yaml file that will be used in the snakemake command.  Also, the scheduler must correspond to the syntax used in the snakemake command and cluster.yaml file.  I should point out that these additional changes are needed for responsibly using PLINK within a snakemake framework, and are not directly needed for snakemake.  PLINK will attempt to auto-detect available resources upon running regardless of the resources that were requested when the job was submitted.  Therefore, we have to read and parse the requested resources in the cluster config file in order for them to be communicated to PLINK from within the Snakefile.  
+Here, it is necessary that the `cluster_config` entry is set to the path of the cluster.yaml file that will be used in the snakemake command.  Also, the scheduler must correspond to the syntax used in the snakemake command and cluster.yaml file.  I should point out that these additional changes are needed for responsibly using PLINK within a snakemake framework, and are not directly needed for snakemake.  PLINK will attempt to auto-detect available resources upon running regardless of the resources that were requested when the job was submitted.  Therefore, we have to read and parse the requested resources in the cluster config file in order for them to be communicated to PLINK from within the Snakefile.  
 
 ### Other notes
 
-It is recommended that snakemake is run as an interactive session on an HPC.  Snakemake will launch the specified number (via the -j flag) of jobs, and then will hang and wait for them to finish.  As jobs finish (and assuming no errors), snakemake will launch additional jobs keeping the total running jobs at whatever -j is set for.  Although Snakemake should not use a lot of memory, it could have long run times, which is generally not advisable on login nodes.  
+It is recommended that _snakemake_ is run as an interactive session on an HPC.  _Snakemake_ will launch the specified number (via the -j flag) of jobs, and then will hang and wait for them to finish.  As jobs finish (and assuming no errors), _snakemake_ will launch additional jobs keeping the total running jobs at whatever -j is set for.  Although _snakemake_ should not use a lot of memory, it could have long run times, which is generally not advisable on login nodes.  
 
-One attractive feature of _snakemake_ is its ability to keep track of the progress and dependencies of the different stages of the pipeline.  Specifically, if an error is encountered or the pipeline otherwise stops before the final step, _snakemake_ can resume the pipeline where it left off, avoiding redundant computation for previously completed tasks.  To do so, simply resubmit the original snakemake command.
+One attractive feature of _snakemake_ is its ability to keep track of the progress and dependencies of the different stages of the pipeline.  Specifically, if an error is encountered or the pipeline otherwise stops before the final step, _snakemake_ can resume the pipeline where it left off, avoiding redundant computation for previously completed tasks.  To do so, simply resubmit the original _snakemake_ command.
 
 To run a specific part of the pipeline, do:
 
@@ -113,7 +113,7 @@ Also, it is often very helpful to do a 'dry-run' of the pipeline in which the di
     
 #### Debugging and error reports
 
-Should an error be encountered in a job, snakemake will halt the pipeline and indicate in the terminal that an error has occurred.  The offending job will also be printed in red in the terminal window.  More information on why the job failed can be found in the 'stdout' and 'stderr' files that are output to the **'OandE'** directory and will be labelled with the jobname.
+Should an error be encountered in a job, snakemake will halt the pipeline and indicate in the terminal that an error has occurred.  The offending job will also be printed in red in the terminal window.  More information on why the job failed can be found in the 'stdout' and 'stderr' files that are output to the _'OandE'_ directory and will be labelled with the jobname.
 
 ## Pipeline Overview
 
@@ -220,16 +220,18 @@ Association Mapping settings in config.yml:
       missingness: '0.2' # missingness threshold
       maf: '0.01' # Minor allele frequency threshold
       pc_num: '4' # Number of PCs to use in GWAS
-      cores: '24' # Number of cores to use in GWAS.  24 is recommended
+      cores: '4' # Number of cores to use in GWAS.
       sig_threshold: '0.000005' # pvalue threshold for annotating SNPs
       other_predictors: 'sex' # Covariates to be used in GWAS.
       blink_dir: "/usr/local/bin/BLINK" # Do not change
 
-For the 'other_predictors' entry, the 'sex' info is taken from the .fam file specified in the 'query' entry of the config file.  Additional covariates can be listed here, but they must be provided in a separate file whose path is provided at the following entry.
+For the 'other_predictors' entry, the 'sex' info is taken from the .fam file that is associated with the 'query' entry of the config file.  Additional covariates can be listed here, but they must be provided in a separate file whose path is provided at the following entry.
 
     covariate_file: 'none' 
     
  This file should be tab-delimited file with a header line specifying names of covariates (excluding sex) that are listed in the 'covars' entry.  First column MUST be labeled with 'taxa' and should contain sample IDs EXACTLY as they are specified in input plink files.  Note that this feature has not been tested.
+ 
+ NOTE: while increasing the number of cores (via the `cores` entry) may speed up computation, doing so WITHOUT requesting additional memory (in the cluster.yaml file) may result in stalled jobs.  In GENESIS, computation is parallelized by chromosome.  Tests with a dataset containing several thousands of individuals found that GENESIS stalls with 12 cores and 150Gb of memory. 
 
 ### Admixture Mapping
 For the admixture mapping, this pipeline takes, as input, the output of the [RFMix](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3738819/) ancestry inference program. The model used for admixture mapping is taken from [Grinde et al 2019](https://www.cell.com/ajhg/pdfExtended/S0002-9297(19)30008-4).  In short, for every genomic window a general linear model (generalized, in the case of case/control phenotypes) is fit with the local ancestry state as the predictor variable with global ancestry (or admixture proportions) as a covariate.  For every ancestry of interest, a separate model is fit for each ancestry listed in the config.yml file at 'ancestry_predictors'.  Note that the acronyms used here must exactly match those specified in the RFMix output.  
