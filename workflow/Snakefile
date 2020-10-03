@@ -28,7 +28,7 @@ for directory in dirs:
     if not os.path.exists(directory): os.mkdir(directory)
 
 if config['singularity']['use_singularity'] == 'true' and config['singularity']['image'] != "none":
-    bind_paths = ",".join(set([os.path.dirname(x) for x in [QUERY, config['samples']]] + dirs + [RFMIX]))
+    bind_paths = ",".join(set([os.path.dirname(x) for x in [QUERY, config['samples'], config['annotation']['rsIDs'], config['annotation']['typed_key']]] + dirs + [RFMIX]))
     CMD_PREFIX = f"set +u; {config['singularity']['module']}; singularity exec --bind {bind_paths} {config['singularity']['image']}"
     CODE = config['singularity']['code']
 else:
@@ -80,7 +80,7 @@ def get_all_inputs(wildcards):
     input_list = ["accessory/.sHWE_pass.txt", f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png",
                   f"plink/{BASE}_LDp_sHWE.bed", f"{BASE}.admixmap.txt", f"{QUERY}.bed", f"plink/{BASE}.eigenvec",
                   f"accessory/samples.txt", f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.genome.gz",
-                  f"{BASE}.blink.txt", f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf", f"{BASE}.genesis.sig.annt.txt", f"{BASE}.blink.sig.annt.txt"]
+                  f"{BASE}.blink.txt", f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf", f"{BASE}.genesis.sig.annt.txt", f"{BASE}.blink.sig.annt.txt", f"{BASE}.admixmap.annt.txt"]
     if config['admixMapping']['skip'] != 'true': input_list.append(f"{BASE}.admixmap.txt")
     return(input_list)
 
@@ -426,6 +426,7 @@ rule make_report:
                           f"eigenval=\"{BASE}.pcair.varprop\", " \
                           f"phenodat=\"{BASE}.genesis.pdat\", " \
                           f"kinplot=\"{BASE}.kinplot.png\", " \
+                          f"mflt=\"accessory/missing_filter.txt\", " \
                           f"rulegraph_file=\"{BASE}-rulegraph.png\", "
             if config['admixMapping']['skip'] != 'true':
                 report_line += f"admixMap_rslt=\"{BASE}.admixmap.txt\", global_ancestry=\"{BASE}.globalancestry.txt\","
@@ -441,16 +442,35 @@ rule annotate_snps: # get genotype frequencies from VCF
     output: f"{BASE}.genesis.sig.annt.txt", f"{BASE}.blink.sig.annt.txt"
     run:
         shell(f"cut -f 1 {BASE}.genesis.sig.txt > {BASE}.genesis.sigID.txt; cut -f 1 {BASE}.blink.sig.txt > {BASE}.blink.sigID.txt")
-        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {BASE}.genesis.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.gen.sig {plnk_rsrc(rule, plink_run_specs)}")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {BASE}.genesis.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.genesis.sig {plnk_rsrc(rule, plink_run_specs)}")
         shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {BASE}.blink.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.blink.sig {plnk_rsrc(rule, plink_run_specs)}")
-        cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.gen.sig.vcf | " \
+        cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.genesis.sig.vcf | " \
               "awk '{{split($8,a,\"|\"); split(a[1],b,\"=\"); print $1,$2,$4,$5,a[4],a[3],a[2],b[2]}}' | grep -v \"#\" > {BASE}.genesis.sig.preannt.txt"
         shell(cmd)
         cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.blink.sig.vcf | " \
               "awk '{{split($8,a,\"|\"); split(a[1],b,\"=\"); print $1,$2,$4,$5,a[4],a[3],a[2],b[2]}}' | grep -v \"#\" > {BASE}.blink.sig.preannt.txt"
         shell(cmd)
-        shell(f"{CMD_PREFIX} Rscript {CODE}/merge_annt.R -i {BASE}.blink.txt -s {BASE}.blink.sig.preannt.txt -r {config['annotation']['rsIDs']} -f {BASE}.blink.sig.frq.cc -o {BASE}.blink.sig.annt.txt")
-        shell(f"{CMD_PREFIX} Rscript {CODE}/merge_annt.R -i {BASE}.genesis.txt -s {BASE}.genesis.sig.preannt.txt -r {config['annotation']['rsIDs']} -f {BASE}.gen.sig.frq.cc -o {BASE}.genesis.sig.annt.txt")
+        for soft in ['blink','genesis']:
+            cmd = f"{CMD_PREFIX} Rscript {CODE}/merge_annt.R -i {BASE}.{soft}.txt -s {BASE}.{soft}.sig.preannt.txt -r {config['annotation']['rsIDs']} -f {BASE}.{soft}.sig.frq.cc -o {BASE}.{soft}.sig.annt.txt"
+            if os.path.exists(config['annotation']['typed_key']): cmd += f" -t {config['annotation']['typed_key']}"
+            shell(cmd)
+
+rule annotate_regions: # get genotype frequencies from VCF
+    input: f"{BASE}.admixmap.txt", f"{BASE}.blink.sig.txt"
+    output: f"{BASE}.admixmap.annt.txt"
+    run:
+        dat = pd.read_table(input[0], sep = r"\s+")
+        dat = dat[dat['ANC.p.value'] < float(config['admixMapping']['sig_threshold'])]
+        dat[['chm', 'spos', 'epos', 'ANC.estimate', 'ANC.std.error', 'ANC.statistic', 'ANC.p.value', 'anc']].to_csv(f"{BASE}.admixmap.tmp.bed", header=False, sep = "\t", index=False)
+        gff = f"{os.getcwd()}/accessory/{os.path.basename(config['annotation']['gff'])}"
+        if config['annotation']['download_gff'] == 'true': shell(f" wget {config['annotation']['gff']} -O {gff}")
+        else: shell(f"cp {config['annotation']['gff']} {gff}")
+        shell(f"{CMD_PREFIX} bedtools slop -i {BASE}.admixmap.tmp.bed -g {os.getcwd()}/accessory/hg19.genome -b {config['admixMapping']['annotation_buffer']} > {BASE}.admixmap.bed")
+        cmd = f"{CMD_PREFIX} bedtools intersect -a {BASE}.admixmap.bed -b {gff} -loj | "  \
+        "awk '{{if($11==\"gene\") print $0}}' | awk '{{split($NF,a,\";\"); $NF=\"\"; for(x in a) if(a[x] ~ /Name=/) print $0,a[x]}}' | sed 's/Name=//' > {BASE}.admixmap.preannt.txt"
+        shell(cmd)
+        shell(f"{CMD_PREFIX} Rscript {CODE}/admixAnnt.R -i input/ -p {BASE}.admixmap.preannt.txt -b {config['admixMapping']['annotation_buffer']} -o {{output}}")
+
 
 rule conditional_analysis:
     input: f"{BASE}.genesis.gds", f"{BASE}.genesis.pdat", f"{BASE}.genesis.grm.gds"

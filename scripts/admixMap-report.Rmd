@@ -10,6 +10,7 @@ params:
   genesis_rslt: NA
   input_directory: NA
   blink_rslt: NA
+  mflt: NA
   admixMap_rslt: NA
   ancestry_comps: NA
   global_ancestry: NA
@@ -131,8 +132,6 @@ pbim = read.table(params$pruned_bim)
 
 Gens = as.numeric(params$gen_since_admix)
 
-
-
 gwas_thresh = as.numeric(params$gwas_threshold)
 
 ent = read.table(params$sHWE_entropy)
@@ -143,6 +142,8 @@ eigval %<>% filter(!is.na(V1)) %>% rowid_to_column %>% mutate(PC = rowid, Varian
 pdat = read.table(params$phenodat, head=T)
 
 outPre = str_split(params$blink_rslt, "[.]")[[1]][1]
+
+mflt = read.table(params$mflt, head=F)
 
 ```
 
@@ -223,6 +224,28 @@ yaml$samples
 The resulting dataset is composed of the following numbers of cases and controls:
 ```{r case-numbers-sub}
 fam %>% mutate(phenotype = V6) %>% group_by(phenotype) %>% summarize(n=n()) %>% knitr::kable()
+```
+
+Since missingness patterns and allele frequencies will likely change upon data subsetting, we filter sites for excessive missingness as well as sites that show substantial differences in missingness between cases and controls.  The following thresholds were applied for each:
+
+Missingness by case p-value threshold (as determined by PLINK)
+```{r mbc-pval}
+yaml$gwas$mbc_pval
+```
+
+Overall missingness
+```{r missing}
+yaml$gwas$missingness
+```
+
+Minor allele frequency
+```{r maf}
+yaml$gwas$maf
+```
+
+The missingness filters removed the following number of sites from the dataset:
+```{r msng-sites}
+nrow(mflt)
 ```
 
 
@@ -310,13 +333,20 @@ eigval %>% ggplot(aes(x = PC, y = VarianceProportion)) + geom_bar(stat="identity
 ```
 
 PC plots:
-```{r plink-pcplots, fig.height = 4, fig.width = 4, fig.cap = "Pairwise PC plots (via PC-AiR) for the number of PCs used in GWAS", warning=FALSE, message=FALSE}
-for (i in 1:(as.numeric(yaml$gwas$pc_num) - 1)){
-  for (j in (i+1):as.numeric(yaml$gwas$pc_num)){
-    xvar = paste0("PC",i)
-    yvar = paste0("PC",j)
-    pdat %>% mutate(Pheno = as.character(pheno)) %.>% print(ggplot(data = .,aes_string(x=xvar,y=yvar,color='sex',shape='Pheno')) + geom_point(alpha = 0.5))
-  }
+```{r plink-pcplots, fig.height = 5, fig.width = 8, fig.cap = "Pairwise PC plots (via PC-AiR) for the number of PCs used in GWAS.  Controls=Black, Cases=Red", warning=FALSE, message=FALSE}
+pc.cols = ifelse(grepl("1", pdat$pheno), "#FF0000", "#000000")
+if(as.numeric(yaml$gwas$pc_num) > 5){
+  pairs(
+    pdat[,c(1:5)],
+    cex=0.5,
+    col = pc.cols,
+    labels = paste0("PC",seq(1,5)))
+} else{
+  pairs(
+    pdat[,c(1:as.numeric(yaml$gwas$pc_num))],
+    cex=0.5,
+    col = pc.cols,
+    labels = paste0("PC",seq(1,as.numeric(yaml$gwas$pc_num))))
 }
 ```
 
@@ -394,6 +424,7 @@ gen %>% sample_n(500000) %>% filter(!is.na(SPA.pval)) %.>% gg_qqplot(.$SPA.pval,
 
 and a corresponding Genomic Inflation Factor (GIF) of:
 ```{r genesis-inflation-factor}
+#AD Plink will give lambda value. Low values here look suspect.
 gen %>% filter(variant.id %in% pbim$V2) %>% mutate(chisq = Score.Stat ^ 2) %>% select(chisq) %.>% median(.$chisq, na.rm=T) / 0.456
 ```
 A GIF near of 1 indicates absence of p-value inflation due to population structure, and a value < 1.1 is generally considered acceptable.  This GIF is based on the test statistics of the LD-pruned SNPs and \href{http://rstudio-pubs-static.s3.amazonaws.com/9743_8a5f7ba3aa724d4b8270c621fdf6d06e.html}{{\color{blue}{\underline{calculated}}}} by dividing the median of the squared test statistics by 0.456.  
@@ -460,7 +491,7 @@ if (params$admixMap_rslt != "-9"){
 }
 ```
 
-```{r, fig.height = 4, fig.width = 7, fig.cap = "Manhattan plot of log(10) of p-values produced from the BLINK program", warning=FALSE, message=FALSE}
+```{r, fig.height = 4, fig.width = 7, fig.cap = "Manhattan plot of -log(10) of p-values produced from admixture mapping", warning=FALSE, message=FALSE}
 if (params$admixMap_rslt != "-9"){
   knitr::opts_chunk$set(dev = 'png')
   for (i in 1:length(ancpre)){

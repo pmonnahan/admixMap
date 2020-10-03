@@ -9,6 +9,8 @@ admixMapping:
   cores: '12'
   ancestry_predictors: 'AFR,EUR,AMR'
   other_predictors: 'sex'  # this should include the variable names provided in covariate_file if those variables are desired to be included in the admixture mapping.
+  sig_threshold: '0.005'
+  annotation_buffer: '100000'
 gwas:
   mbc_pval: '0.0001' # pvalue threshold for missingness-by-case
   missingness: '0.2' # missingness threshold
@@ -51,6 +53,9 @@ run_settings:
   scheduler: 'pbs'
 annotation:
   rsIDs: "/home/spectorl/pmonnaha/misc/hg19_rsID_key.txt"
+  download_gff: 'true'
+  gff: 'ftp://ftp.ensembl.org/pub/grch37/current/gff3/homo_sapiens/Homo_sapiens.GRCh37.87.gff3.gz'
+  typed_key: 'none'
 conditional_analysis:
     snp_list: 'none'
     distance: '100000'

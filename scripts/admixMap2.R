@@ -39,10 +39,6 @@ registerDoParallel(cores = as.numeric(opt$cores) - 1)
 ancpre = strsplit(opt$AncestryPredictors, ",")[[1]]
 othpre = strsplit(opt$OtherPredictors, ",")[[1]]
 
-pre.list = list()
-for (a in 1:length(ancpre)){
-  pre.list[[length(pre.list)+1]] = c(ancpre[a], paste0(ancpre[a],".glob"), othpre)
-}
 
 ######################### END: Read in arguments #########################
 
@@ -62,16 +58,25 @@ calcGLM = function(ndat, predictors, family = "binomial", random = -9){
 wrapGLM = function(file, predictors, family = "binomial", random = -9){
     dat = read.table(file, header = T, comment.char = "")
     pos = dat %>% distinct(spos)
+    
+    glob = tibble(name = colnames(dat)) %>% filter(grepl(".glob", name)) %>% slice(1:length(name) - 1)
+    pre.list = list() # Make list to hold sets of predictor variables
+    for (a in 1:length(predictors)){
+      pre.list[[length(pre.list)+1]] = c(predictors[a], as.vector(glob$name), othpre)
+    }
+    
+    # Loop over windows and loop over ancestries specified in 'predictors'
     res = foreach(i = 1:nrow(pos), .combine='rbind', .errorhandling="remove") %:%
-      foreach(j = 1:length(predictors), .combine = 'rbind', .errorhandling="remove") %dopar% {
+      foreach(j = 1:length(pre.list), .combine = 'rbind', .errorhandling="remove") %dopar% {
       ndat = dat[dat$spos==pos[i,],]
-      res1 = calcGLM(ndat, predictors[[j]], family, random)
-      anc = predictors[[j]][1]
-      exp_cols = (length(predictors[[j]]) * 4) + 18
-      res2 = res1 %>% rename_with( ~ str_replace(.,anc,"ANC"))
-      res2 %<>% mutate(anc = anc)
-      if (ncol(res2) == exp_cols){
-        res2
+      res1 = calcGLM(ndat, pre.list[[j]], family, random)
+      anc = pre.list[[j]][1]
+      exp_cols = (length(pre.list[[j]]) * 4) + 18
+      # res2 = res1 %>% rename_with( ~ str_replace(.,anc,"ANC"))
+      names(res1)[18:21] = c("ANC.estimate","ANC.std.error","ANC.statistic","ANC.p.value")
+      res1 %<>% mutate(anc = anc)
+      if (ncol(res1) == exp_cols){
+        res1
       }
     }
   return(res)
@@ -83,7 +88,7 @@ wrapGLM = function(file, predictors, family = "binomial", random = -9){
 ######################### Run main components ###########################
 
 
-res = wrapGLM(opt$inputFile, pre.list)
+res = wrapGLM(opt$inputFile, ancpre)
 write.table(res, paste(opt$outPrefix, '.admixmap.txt', sep = ""), quote = F, row.names = F)
 
 

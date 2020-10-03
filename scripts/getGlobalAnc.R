@@ -41,12 +41,17 @@ getGlobalAnc = function(rfmix_dir, samples){
     DF = rbind(DF, dat)
   }
   DF %<>% mutate(samp = str_replace(V1, "#", "")) %>% select(-V1)
+  dfr = nrow(DF)
   if (samples != "all"){
     samples = read.table(samples, comment.char = "")
     DF %<>% filter(samp %in% samples$V1)
   }
-  DF %<>% pivot_longer(-samp, names_to="pop", values_to="ancestry") %>% group_by(samp, pop) %>% summarize(ancestry = mean(ancestry)) %>% spread(pop,ancestry)
-  colnames( DF ) <- unlist(header)
+  if (nrow(DF) != dfr){
+    print("At least one sample name in RFMix output does NOT match any sample in the samples file.  Ensure consistent use of underscores vs hyphens.")
+  }else{
+    DF %<>% pivot_longer(-samp, names_to="pop", values_to="ancestry") %>% group_by(samp, pop) %>% summarize(ancestry = mean(ancestry)) %>% spread(pop,ancestry)
+    colnames( DF ) <- unlist(header)
+  }
   return(DF)
 }
 

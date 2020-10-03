@@ -24,6 +24,7 @@ option_list <- list(
   make_option(c("-s", "--snpEff"), help = "parsed snpEff annotation"),
   make_option(c("-r", "--rsIDs"), help="text file with marker name and rsID"),
   make_option(c("-f", "--freqs"), help="case-control frequencies from plink"),
+  make_option(c("-t", "--typed"), help="key that indicates if and which datasets have been directly genotyped", default="-9"),
   make_option(c("-o", "--outPre"), help="output prefix")
 )
 
@@ -33,6 +34,12 @@ dat = read.table(opt$inputFile, header = T)
 
 freq = read.table(opt$freqs, header = T)
 freq %<>% separate(SNP,into=c("chr2","pos2")) %>% mutate(chr = as.numeric(chr2), pos = as.numeric(pos2)) %>% select(-c("CHR","chr2","pos2"))
+
+if (opt$typed != "-9"){
+  tk = read.table(opt$typed, col.names = c("chrom","pos","ID","ref","alt","genotyped"))
+  tk %<>% mutate(chr=as.numeric(str_replace(chrom, "chr", ""))) %>% select(chr,pos,genotyped) 
+  freq %<>% left_join(tk, by=c("chr","pos"))
+}
 
 rs = read.table(opt$rsIDs)
 rs %<>% mutate(chr = V1, pos = V2, rsID = V3, ref = V4, alt = V5) %>% select(-c(V1,V2,V3,V4,V5))
@@ -48,13 +55,17 @@ print(soft)
 
 if (soft=="blink"){
   print(opt$outPre)
-  annt %>% left_join(dat, by = c("chr","pos")) %>% left_join(rs, by = c("chr","pos"), suffix = c(".annt","rs")) %>% left_join(freq, by = c("chr","pos")) %>% arrange(p_value) %>% select(chr, pos, rsID, gene, type, p_value, maf, MAF_A, MAF_U, NCHROBS_A, NCHROBS_U, ref.annt, alt.annt, refrs, altrs, A1, A2) %>% write.table(opt$outPre, row.names = F, quote = F)
-  # annt %<>% left_join(dat, by = c("chr","pos")) 
-  # annt %<>% left_join(rs, by = c("chr","pos"), suffix = c(".annt","rs")) 
-  # annt %<>% left_join(freq, by = c("chr","pos")) 
-  # annt %>% arrange(p_value) %>% select(chr, pos, rsID, gene, type, p_value, maf, MAF_A, MAF_U, NCHROBS_A, NCHROBS_U, ref.annt, alt.annt, refrs, altrs, A1, A2) %>% write.table(opt$outPre, row.names = F, quote = F)
+  if (opt$typed != "-9"){
+  annt %>% left_join(dat, by = c("chr","pos")) %>% left_join(rs, by = c("chr","pos"), suffix = c(".annt","rs")) %>% left_join(freq, by = c("chr","pos")) %>% arrange(p_value) %>% select(chr, pos, rsID, gene, type, p_value, maf, MAF_A, MAF_U, NCHROBS_A, NCHROBS_U, ref.annt, alt.annt, refrs, altrs, A1, A2, genotyped) %>% write.table(opt$outPre, row.names = F, quote = F)
+  } else {
+    annt %>% left_join(dat, by = c("chr","pos")) %>% left_join(rs, by = c("chr","pos"), suffix = c(".annt","rs")) %>% left_join(freq, by = c("chr","pos")) %>% arrange(p_value) %>% select(chr, pos, rsID, gene, type, p_value, maf, MAF_A, MAF_U, NCHROBS_A, NCHROBS_U, ref.annt, alt.annt, refrs, altrs, A1, A2) %>% write.table(opt$outPre, row.names = F, quote = F)
+  }
 } 
 
 if (soft=="genesis"){
-  annt %>% left_join(dat, by = c("chr","pos")) %>% left_join(rs, by = c("chr","pos"), suffix = c(".annt","rs")) %>% mutate(OR = exp(Est)) %>% left_join(freq, by = c("chr","pos")) %>% arrange(SPA.pval) %>% select(chr, pos, rsID, gene, type, SPA.pval, OR, Est, freq, MAC, MAF_A, MAF_U, NCHROBS_A, NCHROBS_U, A1, A2) %>% write.table(opt$outPre, row.names = F, quote = F)
+  if (opt$typed != "-9"){
+  annt %>% left_join(dat, by = c("chr","pos")) %>% left_join(rs, by = c("chr","pos"), suffix = c(".annt","rs")) %>% mutate(OR = exp(Est)) %>% left_join(freq, by = c("chr","pos")) %>% arrange(SPA.pval) %>% select(chr, pos, rsID, gene, type, SPA.pval, OR, Est, freq, MAC, MAF_A, MAF_U, NCHROBS_A, NCHROBS_U, A1, A2, genotyped) %>% write.table(opt$outPre, row.names = F, quote = F)
+  } else {
+    annt %>% left_join(dat, by = c("chr","pos")) %>% left_join(rs, by = c("chr","pos"), suffix = c(".annt","rs")) %>% mutate(OR = exp(Est)) %>% left_join(freq, by = c("chr","pos")) %>% arrange(SPA.pval) %>% select(chr, pos, rsID, gene, type, SPA.pval, OR, Est, freq, MAC, MAF_A, MAF_U, NCHROBS_A, NCHROBS_U, A1, A2) %>% write.table(opt$outPre, row.names = F, quote = F)
+  }
 }
