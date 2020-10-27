@@ -19,7 +19,8 @@ TIME = i.strftime('%Y-%m-%d')
 configfile: "workflow/config.yml"
 
 # Parse config.yml file
-QUERY = config['query']
+QUERY = config['query']['plink']
+VCF = config['query']['dosage_vcf']
 RFMIX = config['admixMapping']['rfmix']
 
 # Make subdirectories
@@ -128,15 +129,19 @@ rule make_rulegraph:
 
 rule subset_individuals:
     input: f"{QUERY}.bed"
-    output: f"plink/{BASE}_sub.bed", f"plink/{BASE}_sub_ctrls.bed"
+    output: f"plink/{BASE}_sub.bed", f"plink/{BASE}_sub_ctrls.bed", f"input/{BASE}_sub.vcf.gz"
     params: awk_string = "\'{if($6==1) print $1,$2}' " + f"plink/{BASE}_sub.fam > accessory/control_samples.txt"
     run:
         if config['samples'] == 'all':
             shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep-allele-order --make-bed --maf {config['gwas']['maf']} --out plink/{BASE}_sub {plnk_rsrc(rule, plink_run_specs)}; "
                   f"sed -i 's/#//g' plink/{BASE}_sub.fam")  #Pound sign causes issues with R in subsequent steps
+            if os.path.exists(VCF):
         elif os.path.exists(config['samples']):
             shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep {config['samples']} --keep-allele-order --maf {config['gwas']['maf']} --allow-no-sex --make-bed --out plink/{BASE}_sub {plnk_rsrc(rule, plink_run_specs)};"
                   f"sed -i 's/#//g' plink/{BASE}_sub.fam")
+            if os.path.exists(VCF):
+                shell("cut -d 2 {config['samples']} > input/vcf_samples.txt")
+                shell(f"{CMD_PREFIX} bcftools view -S input/vcf_samples.txt {VCF} -Oz -o input/{BASE}_sub.vcf.gz; {CMD_PREFIX} tabix input/{BASE}_sub.vcf.gz")
         shell(f"{CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_sub_ctrls {plnk_rsrc(rule, plink_run_specs)}")
 
 rule filter_missingness_by_case:
@@ -369,7 +374,7 @@ rule genesis_prep:
     input: f"plink/{BASE}_sub_mflt.bed", f"plink/{BASE}_LDp_sHWE.bim"
     output: f"{BASE}.genesis.pdat", f"{BASE}.genesis.grm.gds", f"{BASE}.genesis.gds"
     run:
-        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R -p plink/{BASE}_sub_mflt -k {{input[1]}} -n {config['gwas']['pc_num']} -o {BASE} -l {config['LD_pruning']['r2_threshold']} -t {config['kinship_threshold']}"
+        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R -p plink/{BASE}_sub_mflt -k {{input[1]}} -n {config['gwas']['pc_num']} -o {BASE} -t {config['kinship_threshold']}"
         if os.path.exists(config['covariate_file']): #Not tested
                 cmd += f" -C {config['covariate_file']}"
         shell(cmd)
@@ -380,6 +385,23 @@ rule genesis_GWAS:
     threads: int(config['gwas']['cores'])
     run:
         cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['gwas']['other_predictors']} -o {BASE}.genesis.txt -c {{threads}}"
+        shell(cmd)
+
+rule genesis_dosage_prep:
+    input: f"plink/{BASE}_LDp_sHWE.bim", f"input/{BASE}_sub.vcf.gz"
+    output: f"{BASE}.genesis.pdat", f"{BASE}.genesis.grm.gds", f"{BASE}.genesis.gds"
+    run:
+        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R -p plink/{BASE}_sub_mflt -d {{input[1]}}.. -k {{input[0]}} -n {config['gwas']['pc_num']} -o {BASE}.dosage -t {config['kinship_threshold']}"
+        if os.path.exists(config['covariate_file']): #Not tested
+                cmd += f" -C {config['covariate_file']}"
+        shell(cmd)
+
+rule genesis_dosage_GWAS:
+    input: f"{BASE}.dosage.genesis.gds", f"{BASE}.genesis.pdat", f"{BASE}.genesis.grm.gds"  # No control matching is done because SPA method accommodates imbalanced case/control ratios
+    output: f"{BASE}.genesis.txt"
+    threads: int(config['gwas']['cores'])
+    run:
+        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['gwas']['other_predictors']} -o {BASE}.dosage.genesis.txt -c {{threads}}"
         shell(cmd)
 
 rule blink_convert:
@@ -501,14 +523,15 @@ rule combine_conditional_analysis:
 
 rule polygenic_scores:
     input: f"{BASE}.genesis.txt"
-    output: f"PRS/{BASE}.prs.txt"
+    output: f"PRS/{BASE}.{fname}.prs.txt"
     run:
         if not os.path.exists('PRS'): os.mkdir('PRS')
         if os.path.exists(config['polygenic_scores']['snp_list']):
-            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {config['polygenic_scores']['snp_list']} --keep-allele-order --allow-no-sex --recodeAD --out PRS/PRS_genotypes {plnk_rsrc(rule, plink_run_specs)} || true")
-            shell(f"head -n 1 {BASE}.genesis.txt > PRS/head.txt; grep -f {config['polygenic_scores']['snp_list']} {BASE}.genesis.txt > PRS/body.txt")
-            shell(f"cat PRS/head.txt PRS/body.txt > PRS/PRS_betas.txt; rm PRS/head.txt; rm PRS/body.txt")
-            shell(f"{CMD_PREFIX} Rscript scripts/PRS.R -g PRS/PRS_genotypes.raw -b PRS/PRS_betas.txt -o PRS/{BASE}")
+            fname = os.path.basename(config['polygenic_scores']['snp_list']).replace(".txt", "")
+            shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {config['polygenic_scores']['snp_list']} --keep-allele-order --allow-no-sex --recodeAD --out PRS/{BASE}.{fname}.PRS_genotypes {plnk_rsrc(rule, plink_run_specs)} || true")
+            shell(f"head -n 1 {BASE}.genesis.txt > PRS/{BASE}.{fname}.head.txt; grep -f {config['polygenic_scores']['snp_list']} {BASE}.genesis.txt > PRS/{BASE}.{fname}.body.txt")
+            shell(f"cat PRS/{BASE}.{fname}.head.txt PRS/{BASE}.{fname}.body.txt > PRS/{BASE}.{fname}.PRS_betas.txt; rm PRS/{BASE}.{fname}.head.txt; rm PRS/{BASE}.{fname}.body.txt")
+            shell(f"{CMD_PREFIX} Rscript scripts/PRS.R -g PRS/{BASE}.{fname}.PRS_genotypes.raw -b PRS/{BASE}.{fname}.PRS_betas.txt -o PRS/{BASE}.{fname}")
         else:
             print("Did not find snp_list")
 

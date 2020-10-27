@@ -1,0 +1,55 @@
+#Modify lines indicated with MODIFY
+__default__:
+  A: 'pmonnaha' #MODIFY.  This should be name of your account with your HPC system
+  p: 'ccgg'
+  job-name: "{rule}"
+  time: "4:00:00"
+  mem-per-cpu: "5G"
+  ntasks: "1"
+  nodes: "1"
+  mail-user: "pmonnaha@umn.edu"
+  mail-type: "NONE"
+  o: 'OandE/{rule}.{wildcards}.out'
+  e: 'OandE/{rule}.{wildcards}.err'
+
+filter_sHWE_SNPs:
+  time: "6:00:00"
+  mem-per-cpu: "16G"
+  ntasks: "1"
+  nodes: "1"
+
+LD_prune:
+  time: "12:00:00"
+  mem-per-cpu: "16G"
+  ntasks: "1"
+  nodes: "1"
+
+structHWE:
+  time: "12:00:00"
+  mem-per-cpu: "32G"
+  ntasks: "1"
+  nodes: "1"
+
+admixMap:
+  time: "24:00:00"
+  mem-per-cpu: "64G"
+  ntasks: "1"
+  nodes: "1"
+
+blink_convert:
+  time: "12:00:00"
+  mem-per-cpu: "16G"
+  ntasks: "1"
+  nodes: "1"
+
+blink_GWAS:
+  time: "12:00:00"
+  mem-per-cpu: "64G"
+  ntasks: "1"
+  nodes: "1"
+
+genesis_GWAS:
+  time: "48:00:00"
+  mem-per-cpu: "64G"
+  ntasks: "1"
+  nodes: "1"
