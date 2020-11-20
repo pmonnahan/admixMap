@@ -110,6 +110,14 @@ def get_conditional_analysis_input(wildcards):
             inputList.append(f"conditional-analysis/{BASE}-{marker}.genesis.txt")
     return(inputList)
 
+def get_fine_map_input(wildcards):
+    inputList = []
+    with open(config['fine_mapping']['snp_list'],'r') as snp_list: # One column with snpIDs
+        for line in snp_list:
+            marker = line.strip().replace(":", "-")
+            inputList.append(f"fine-mapping/{BASE}-{marker}.susie.txt")
+    return(inputList)
+
 def plnk_rsrc(rule_name, plink_specs):
     try: resources = plink_specs[rule_name]
     except KeyError: resources = plink_specs['__default__']
@@ -129,20 +137,18 @@ rule make_rulegraph:
 
 rule subset_individuals:
     input: f"{QUERY}.bed"
-    output: f"plink/{BASE}_sub.bed", f"plink/{BASE}_sub_ctrls.bed", f"input/{BASE}_sub.vcf.gz"
+    output: f"plink/{BASE}_sub.bed", f"plink/{BASE}_sub_ctrls.bed"
     params: awk_string = "\'{if($6==1) print $1,$2}' " + f"plink/{BASE}_sub.fam > accessory/control_samples.txt"
     run:
-        if config['samples'] == 'all':
-            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep-allele-order --make-bed --maf {config['gwas']['maf']} --out plink/{BASE}_sub {plnk_rsrc(rule, plink_run_specs)}; "
-                  f"sed -i 's/#//g' plink/{BASE}_sub.fam")  #Pound sign causes issues with R in subsequent steps
-            if os.path.exists(VCF):
-        elif os.path.exists(config['samples']):
-            shell(f"{CMD_PREFIX} plink --bfile {QUERY} --keep {config['samples']} --keep-allele-order --maf {config['gwas']['maf']} --allow-no-sex --make-bed --out plink/{BASE}_sub {plnk_rsrc(rule, plink_run_specs)};"
-                  f"sed -i 's/#//g' plink/{BASE}_sub.fam")
-            if os.path.exists(VCF):
-                shell("cut -d 2 {config['samples']} > input/vcf_samples.txt")
-                shell(f"{CMD_PREFIX} bcftools view -S input/vcf_samples.txt {VCF} -Oz -o input/{BASE}_sub.vcf.gz; {CMD_PREFIX} tabix input/{BASE}_sub.vcf.gz")
+        cmd = f"{CMD_PREFIX} plink --bfile {QUERY} --keep-allele-order --make-bed --maf {config['gwas']['maf']} --allow-no-sex --out plink/{BASE}_sub {plnk_rsrc(rule, plink_run_specs)}
+        if os.path.exists(config['samples']): cmd += f" --keep {config['samples']}"
+        if os.path.exists(config['sites']): cmd += f" --exclude {config['sites']}"
+        cmd += f"; sed -i 's/#//g' plink/{BASE}_sub.fam"
+        print(cmd)
+        shell(cmd)
         shell(f"{CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_sub_ctrls {plnk_rsrc(rule, plink_run_specs)}")
+                  f"sed -i 's/#//g' plink/{BASE}_sub.fam")  #Pound sign causes issues with R in subsequent steps
+
 
 rule filter_missingness_by_case:
     input: f"plink/{BASE}_sub.bed", f"plink/{BASE}_sub_ctrls.bed"
@@ -387,6 +393,19 @@ rule genesis_GWAS:
         cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['gwas']['other_predictors']} -o {BASE}.genesis.txt -c {{threads}}"
         shell(cmd)
 
+rule dosage_filter:
+    input: f"plink/{BASE}_sub_mflt.bed"
+    output: f"input/{BASE}_sub.vcf.gz"
+    run:
+        if os.path.exists(VCF):
+            shell(f"cut -f 2 plink/{BASE}_sub_mflt > input/vcf_snps.txt")
+            cmd = f"{CMD_PREFIX} bcftools view -T input/vcf_snps.txt"
+            if os.path.exists(config['samples']): cmd += f" -S {config['samples']}"
+            cmd += f" -Oz -o input/{BASE}_sub.vcf.gz; {CMD_PREFIX} tabix input/{BASE}_sub.vcf.gz"
+            print(cmd)
+            shell(cmd)
+        else: print(f"Did not find VCF file at provided path: {VCF}")
+
 rule genesis_dosage_prep:
     input: f"plink/{BASE}_LDp_sHWE.bim", f"input/{BASE}_sub.vcf.gz"
     output: f"{BASE}.genesis.pdat", f"{BASE}.genesis.grm.gds", f"{BASE}.genesis.gds"
@@ -534,4 +553,19 @@ rule polygenic_scores:
             shell(f"{CMD_PREFIX} Rscript scripts/PRS.R -g PRS/{BASE}.{fname}.PRS_genotypes.raw -b PRS/{BASE}.{fname}.PRS_betas.txt -o PRS/{BASE}.{fname}")
         else:
             print("Did not find snp_list")
+
+rule fine_map:
+    input: f"plink/{BASE}_sub_mflt.bed"
+    output: "fine-mapping/{BASE}-{marker}.susie.txt"
+    run:
+        if not os.path.exists('fine-mapping'): os.mkdir('fine-mapping')
+        chrom, pos = f"{wildcards.marker}".split("-")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --snp {wildcards.marker.replace('-',':')} --window {intconfig['fine_mapping']['distance']} "
+              f"--recodeAD --out conditional-analysis/{wildcards.marker} {plnk_rsrc(rule, plink_run_specs)} || true")
+
+rule combine_fine_map:
+    input: get_fine_map_input
+    output: f"fine-mapping/susie.txt"
+    shell: f"cat {{input}} > {{output}}"
+
 

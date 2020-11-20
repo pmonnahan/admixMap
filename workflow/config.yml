@@ -3,6 +3,7 @@ query:
   plink: "PATH_TO_PLINK_PREFIX" #MODIFY: Prefix for PLINK files to be used as initial input for GWAS using hard genotype call
   dosage_vcf: "none" #
 samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
+sites: "all" # This can be set to path of file containing SNPs to be EXCLUDED from merged query file. One SNP ID per line.
 outname: "AncInf" # MODIFY: prefix used for naming output
 admixMapping:
   skip: 'false'
