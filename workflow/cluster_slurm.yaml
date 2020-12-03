@@ -4,7 +4,7 @@ __default__:
   p: 'ccgg'
   job-name: "{rule}"
   time: "4:00:00"
-  mem-per-cpu: "5G"
+  mem: "5G"
   ntasks: "1"
   nodes: "1"
   mail-user: "pmonnaha@umn.edu"
@@ -14,42 +14,68 @@ __default__:
 
 filter_sHWE_SNPs:
   time: "6:00:00"
-  mem-per-cpu: "16G"
+  mem: "16G"
   ntasks: "1"
   nodes: "1"
 
 LD_prune:
   time: "12:00:00"
-  mem-per-cpu: "16G"
+  mem: "16G"
+  ntasks: "1"
+  nodes: "1"
+
+optimize_sHWE:
+  time: "12:00:00"
+  mem: "16G"
   ntasks: "1"
   nodes: "1"
 
 structHWE:
   time: "12:00:00"
-  mem-per-cpu: "32G"
+  mem: "32G"
   ntasks: "1"
   nodes: "1"
 
 admixMap:
   time: "24:00:00"
-  mem-per-cpu: "64G"
+  mem: "64G"
   ntasks: "1"
   nodes: "1"
 
 blink_convert:
   time: "12:00:00"
-  mem-per-cpu: "16G"
+  mem: "16G"
   ntasks: "1"
   nodes: "1"
 
 blink_GWAS:
   time: "12:00:00"
-  mem-per-cpu: "64G"
+  mem: "64G"
   ntasks: "1"
   nodes: "1"
 
 genesis_GWAS:
   time: "48:00:00"
-  mem-per-cpu: "64G"
-  ntasks: "1"
+  mem: "100G"
   nodes: "1"
+
+genesis_prep:
+  time: "72:00:00"
+  mem: '100G'
+  nodes: "1"
+
+dosage_filter:
+  time: "72:00:00"
+  mem: '32G'
+  nodes: "1"
+
+genesis_dosage_prep:
+  time: "72:00:00"
+  mem: '100G'
+  nodes: "1"
+
+genesis_dosage_GWAS:
+  time: "72:00:00"
+  mem: '100G'
+  nodes: "1"
+

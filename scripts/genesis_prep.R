@@ -24,6 +24,8 @@ suppressPackageStartupMessages(library(SeqArray))
 option_list <- list( 
   make_option(c("-v", "--verbose"), action="store_true", default=TRUE,
               help="Print extra output [default]"),
+  make_option(c("-x", "--skip_pca"), action="store_true", default=FALSE,
+              help="Skip PCA calculation. i.e. just convert genotype data to gds format"),
   make_option(c("-q", "--quietly"), action="store_false", 
               dest="verbose", help="Print little output"),
   make_option(c("-p", "--plink_prefix"),
@@ -45,7 +47,7 @@ option_list <- list(
   make_option(c("-c", "--cores"), type="integer", default=1,
               help="Number of cores to use for parallel processing"),
   make_option(c("-d", "--dosage"), default="-9",
-              help="Input is VCF with imputed dosage"),
+              help="Input is VCF with imputed dosage")
 )
 
 opt <- parse_args(OptionParser(option_list=option_list))
@@ -64,10 +66,10 @@ pbim = read.table(opt$pruned_file)
 ########################## Main Body ######################################
 if(file.exists(opt$dosage)){
   if(opt$cores>1){
-    seqVCF2GDS(opt$plink_prefix, 'tmp.gds', fmt.import="DS",parallel=opt$cores)
+    seqVCF2GDS(opt$dosage, 'tmp.gds', fmt.import="DS",parallel=opt$cores)
   }
   else{
-    seqVCF2GDS(opt$plink_prefix, 'tmp.gds', fmt.import="DS")
+    seqVCF2GDS(opt$dosage, 'tmp.gds', fmt.import="DS")
   }
   seqGDS2SNP('tmp.gds', dosage=TRUE, gdsFile) 
 } else {
@@ -78,76 +80,62 @@ if(file.exists(opt$dosage)){
                 out.gdsfn = gdsFile)
 }
 
+if(!opt$skip_pca){
+  geno <- GdsGenotypeReader(filename = gdsFile, allow.fork = T)
+  genoData <- GenotypeData(geno)
+  #Load phenotype and covariate data
+  mydat = read.table(paste(opt$plink_prefix, ".fam", sep = ""))
+  mydat %<>% mutate(scanID = V2, sex=case_when(V5==1 ~ 'M', V5==2 ~ 'F', TRUE ~ NA_character_),pheno=V6 - 1) %>% select(scanID,sex,pheno)
+  
+  #LD prune the genoData
+  gds <- snpgdsOpen(gdsFile, allow.duplicate = TRUE)
+  
+  KINGmat <- snpgdsIBDKING(gds, snp.id=pbim$V2, verbose=FALSE)
+  
+  kingMat <- KINGmat$kinship
+  dimnames(kingMat) <- list(KINGmat$sample.id, KINGmat$sample.id)
+  
+  pcair = pcair(genoData, kinobj = kingMat, divobj = kingMat, snp.include = pbim$V2)
+  
+  genoIterator1 <- GenotypeBlockIterator(genoData, snpBlock = snpBlockSize, snpInclude = pbim$V2)
+  
+  mypcrelate = pcrelate(genoIterator1, pcair$vectors[,1:as.numeric(opt$pc_number),drop=FALSE])
+  myGRM <- pcrelateToMatrix(mypcrelate, thresh=opt$kin_threshold, scaleKin=2) # Using a threshold actually has a minimal effect here.  
+  
+  mat2gds(myGRM, paste0(outName,".genesis.grm.gds"))
+  
+  #output plot of kinship
+  kinship <- mypcrelate$kinBtwn
+  
+  png(paste0(outName,'.kinplot.png'))
+  ggplot(kinship, aes(k0, kin)) +
+    geom_hline(yintercept=2^(-seq(3,9,2)/2), linetype="dashed", color="grey") +
+    geom_point(alpha=0.5) +
+    ylab("kinship estimate") +
+    theme_bw()
+  dev.off()
+  
+  # Not tested
+  Covars = c("sex")
+  if (opt$covarFile != "none"){
+    add_covar = read.table(opt$covarFile, comment.char = "")
+    mydat %<>% left_join(add_covar, by ="scanID")
+    covar_names = add_covar %>% select(-scanID) %>% colnames()
+    Covars = Covars + covar_names
+  }
+  
+  #Convert pheno/covariate data to ScanAnnotationDataFrame
+  scanAnnot <- ScanAnnotationDataFrame(mydat)
+  
+  #Add PCs to annot data
+  pc.df <- as.data.frame(pcair$vectors)
+  names(pc.df) <- paste0("PC", 1:ncol(pcair$vectors))
+  pc.df$sample.id <- row.names(pcair$vectors)
+  pc.df <- pc.df %>% mutate(scanID = sample.id) %>% select(-sample.id) %>% left_join(pData(scanAnnot), by="scanID")
+  
+  write.table(pc.df, paste0(outName,".genesis.pdat"), quote = F, row.names = F)
+  write.table(as.data.frame(pcair$varprop), paste0(outName, ".pcair.varprop"), quote=F, row.names= F)
+  write.table(as.data.frame(pcair$rels), paste0(outName, ".pcair.rels"), quote=F, row.names= F)
+  write.table(as.data.frame(pcair$unrels), paste0(outName, ".pcair.unrels"), quote=F, row.names= F)
 
-geno <- GdsGenotypeReader(filename = gdsFile, allow.fork = T)
-genoData <- GenotypeData(geno)
-#Load phenotype and covariate data
-mydat = read.table(paste(opt$plink_prefix, ".fam", sep = ""))
-mydat %<>% mutate(scanID = V2, sex=case_when(V5==1 ~ 'M', V5==2 ~ 'F', TRUE ~ NA_character_),pheno=V6 - 1) %>% select(scanID,sex,pheno)
-
-# Generate kinship matrix 
-# mypcrel contains Kinship Estimates from a previous PC-Relate analysis
-
-# It is important that the order of individuals in the matrices kinMat and divMat match the order of individuals in the genoData
-# 
-# KINGmat <- kingToMatrix(opt$kin_file, estimator = "Kinship", 
-#                         thresh = as.numeric(opt$kin_threshold))
-
-#LD prune the genoData
-gds <- snpgdsOpen(gdsFile, allow.duplicate = TRUE)
-
-snpIDs = getSnpID(genoData)
-pruned = which(snpIDs %in% pbim$V2)
-
-# pruned = read.table(opt$ld_prune_snps)
-KINGmat <- snpgdsIBDKING(gds, snp.id=pbim$V2, verbose=FALSE)
-
-kingMat <- KINGmat$kinship
-dimnames(kingMat) <- list(KINGmat$sample.id, KINGmat$sample.id)
-
-pcair = pcair(genoData, kinobj = kingMat, divobj = kingMat, snp.include = pbim$V2)
-
-
-genoIterator1 <- GenotypeBlockIterator(genoData, snpBlock = snpBlockSize, snpInclude = pbim$V2)
-
-mypcrelate = pcrelate(genoIterator1, pcair$vectors[,1:as.numeric(opt$pc_number),drop=FALSE])
-myGRM <- pcrelateToMatrix(mypcrelate, thresh=opt$kin_threshold, scaleKin=2) # Using a threshold actually has a minimal effect here.  
-
-mat2gds(myGRM, paste0(outName,".genesis.grm.gds"))
-
-#output plot of kinship
-kinship <- mypcrelate$kinBtwn
-
-png(paste0(outName,'.kinplot.png'))
-ggplot(kinship, aes(k0, kin)) +
-  geom_hline(yintercept=2^(-seq(3,9,2)/2), linetype="dashed", color="grey") +
-  geom_point(alpha=0.5) +
-  ylab("kinship estimate") +
-  theme_bw()
-dev.off()
-
-# Not tested
-Covars = c("sex")
-if (opt$covarFile != "none"){
-  add_covar = read.table(opt$covarFile, comment.char = "")
-  mydat %<>% left_join(add_covar, by ="scanID")
-  covar_names = add_covar %>% select(-scanID) %>% colnames()
-  Covars = Covars + covar_names
 }
-
-
-#Convert pheno/covariate data to ScanAnnotationDataFrame
-scanAnnot <- ScanAnnotationDataFrame(mydat)
-
-#Add PCs to annot data
-pc.df <- as.data.frame(pcair$vectors)
-names(pc.df) <- paste0("PC", 1:ncol(pcair$vectors))
-pc.df$sample.id <- row.names(pcair$vectors)
-pc.df <- pc.df %>% mutate(scanID = sample.id) %>% select(-sample.id) %>% left_join(pData(scanAnnot), by="scanID")
-
-write.table(pc.df, paste0(outName,".genesis.pdat"), quote = F, row.names = F)
-write.table(as.data.frame(pcair$varprop), paste0(outName, ".pcair.varprop"), quote=F, row.names= F)
-write.table(as.data.frame(pcair$rels), paste0(outName, ".pcair.rels"), quote=F, row.names= F)
-write.table(as.data.frame(pcair$unrels), paste0(outName, ".pcair.unrels"), quote=F, row.names= F)
-
-
