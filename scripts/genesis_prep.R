@@ -28,17 +28,17 @@ option_list <- list(
               help="Skip PCA calculation. i.e. just convert genotype data to gds format"),
   make_option(c("-q", "--quietly"), action="store_false", 
               dest="verbose", help="Print little output"),
-  make_option(c("-p", "--plink_prefix"),
+  make_option(c("-p", "--plink_prefix"), default="-9",
               help="plink prefix for bed, bim, and fam file"),
   # make_option(c("-k", "--kin_file"), 
   #             help="pairwise divergence values from .kin0 from KING-robust kinship estimation"),
-  make_option(c("-k", "--pruned_file"), 
+  make_option(c("-k", "--pruned_file"), default="-9",
               help="pruned SNPs for inclusion in PC calcs"),
-  make_option(c("-n", "--pc_number"), 
+  make_option(c("-n", "--pc_number"), default=4,
               help="number of pc's to include as covariates"),
   make_option(c("-O", "--outDir"), default = getwd(), help = "output directory"),
   make_option(c("-o", "--outPrefix"), help = "output prefix"),
-  make_option(c("-t", "--kin_threshold"), help = "threshold of kinship above which individuals are considered related"),
+  make_option(c("-t", "--kin_threshold"), default="-9", help = "threshold of kinship above which individuals are considered related"),
   make_option(c("-b", "--snp_block_size"), default = 5000, help = "Number of SNPs to read in to memory it at a time when doing the GWAS"),
   make_option(c("-s", "--samplesFile"), default="all", 
               help="path to file containing samples to include"),
@@ -59,7 +59,7 @@ outName = paste0(opt$outDir, "/", opt$outPrefix)
 
 snpBlockSize = as.numeric(opt$snp_block_size)
 
-pbim = read.table(opt$pruned_file)
+
 
 ########################## END Read in Arguments ############################
 
@@ -81,6 +81,7 @@ if(file.exists(opt$dosage)){
 }
 
 if(!opt$skip_pca){
+  pbim = read.table(opt$pruned_file)
   geno <- GdsGenotypeReader(filename = gdsFile, allow.fork = T)
   genoData <- GenotypeData(geno)
   #Load phenotype and covariate data

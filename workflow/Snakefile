@@ -29,7 +29,8 @@ for directory in dirs:
     if not os.path.exists(directory): os.mkdir(directory)
 
 if config['singularity']['use_singularity'] == 'true' and config['singularity']['image'] != "none":
-    bind_paths = ",".join(set([os.path.dirname(x) for x in [QUERY, config['samples'], config['annotation']['rsIDs'], config['annotation']['typed_key']]] + dirs))
+    bind_dirs = [QUERY, config['samples'], config['annotation']['rsIDs'], config['annotation']['typed_key']]
+    bind_paths = ",".join([x for x in set([os.path.dirname(x) for x in bind_dirs] + dirs) if os.path.isdir(x)])
     if config['admixMapping']['skip'] != 'true': bind_paths += f",{RFMIX}"
     CMD_PREFIX = f"set +u; {config['singularity']['module']}; singularity exec --bind {bind_paths} {config['singularity']['image']}"
     CODE = config['singularity']['code']
@@ -65,7 +66,7 @@ if num_jobs <= 1: # Attempt to catch an error that arises in instances where the
 
 # Determine jobs to run locally vs on cluster.  Also coordinate resource management for PLINK.
 plink_run_specs = {'__default__': ""} # Set default to empty string in case of local run.  i.e. default to plink's auto-detection of resources
-plink_rules = ['subset_individuals',"filter_missingness_by_case","downsample_controls","LD_prune","calcFreq","calcIBS","IBD_filter_ctrls","filter_sHWE_SNP","IBD_filter","controlMatch","calcPCA","annotate_snps"]
+plink_rules = ['__default__','subset_individuals',"filter_missingness_by_case","downsample_controls","LD_prune","calcFreq","calcIBS","IBD_filter_ctrls","filter_sHWE_SNPs","IBD_filter","controlMatch","calcPCA","annotate_snps","dosage_filter"]
 if config['run_settings']['local_run'] == 'true':
     localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, blink_GWAS, extract_optimum_popnum, cat_admixMap
 else:
@@ -75,7 +76,7 @@ else:
     clusterfile = yaml.load(open(config['run_settings']['cluster_config']), Loader=yaml.FullLoader)
     for rule in clusterfile.keys(): # Purpose of this code is to make sure plink requests same amount of memory/threads as specified in cluster.yaml file
         if rule in plink_rules:
-            if config['run_settings']['scheduler'] == 'slurm': plink_run_specs[rule] = f"--memory {int(clusterfile[rule]['mem'].replace('G','000')) * int(clusterfile[rule]['ntasks'])} --threads {clusterfile[rule]['ntasks']}"
+            if config['run_settings']['scheduler'] == 'slurm': plink_run_specs[rule] = f"--memory {clusterfile[rule]['mem'].replace('G','000')} --threads {clusterfile[rule]['ntasks']}"
             elif config['run_settings']['scheduler'] == 'pbs':  plink_run_specs[rule] = f"--memory {clusterfile[rule]['mem'].replace('b','').replace('m','').replace('g','000')} --threads 1"
 
 
@@ -84,10 +85,11 @@ def get_all_inputs(wildcards):
     input_list = ["accessory/.sHWE_pass.txt", f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png",
                   f"plink/{BASE}_LDp_sHWE.bed", f"{QUERY}.bed", f"plink/{BASE}.eigenvec",
                   f"accessory/samples.txt", f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.genome.gz",
-                  f"{BASE}.blink.txt", f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf", f"{BASE}.genesis.sig.annt.txt", f"{BASE}.blink.sig.annt.txt"]
+                  f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf", f"{BASE}.genesis.sig.annt.txt"]
+    #input_list += [f"{BASE}.blink.txt", f"{BASE}.blink.sig.annt.txt"]
     if config['admixMapping']['skip'] != 'true':
         input_list += [f"{BASE}.admixmap.txt", f"{BASE}.admixmap.annt.txt", f"{BASE}.admixmap.txt"]
-    if os.path.exists(config['query']['dosage_vcf']): input_list += [f"{BASE}.dos.genesis.txt"]
+    if os.path.exists(VCF): input_list += [f"{BASE}.dos.genesis.txt"]
     return(input_list)
 
 def get_cM_inputs(wildcards):
@@ -106,16 +108,20 @@ def get_dataprep_input(wildcards):
     return(input_list + inFile + ["accessory/excluded_related_samples.txt"])
 
 def get_report_input(wildcards):
-    input_list = [f"{BASE}.blink.txt", f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt"]
+    input_list = [f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt"]
+    #input_list += [f"{BASE}.blink.txt"]
     if config['admixMapping']['skip'] != 'true': input_list += [f"{BASE}.admixmap.txt", f"{BASE}.globalancestry.txt"]
+    if os.path.exists(VCF): input_list += [f"{BASE}.dos.genesis.txt"]
     return(input_list)
 
 def get_conditional_analysis_input(wildcards):
     inputList = []
-    with open(config['conditional_analysis']['snp_list'],'r') as snp_list: # One column with snpIDs
-        for line in snp_list:
-            marker = line.strip().replace(":", "-")
-            inputList.append(f"conditional-analysis/{BASE}-{marker}.genesis.txt")
+    if os.path.exists(config['conditional_analysis']['snp_list']):
+        with open(config['conditional_analysis']['snp_list'],'r') as snp_list: # One column with snpIDs
+            for line in snp_list:
+                marker = line.strip().replace(":", "-")
+                inputList.append(f"conditional-analysis/{BASE}-{marker}.genesis.txt")
+    else: print("Unable to locate 'snp_list' file specified in config file under 'conditional_analysis")
     return(inputList)
 
 def get_fine_map_input(wildcards):
@@ -387,7 +393,7 @@ rule genesis_prep:
     input: f"plink/{BASE}_sub_mflt.bed", f"plink/{BASE}_LDp_sHWE.bim"
     output: f"input/{BASE}.genesis.pdat", f"input/{BASE}.genesis.grm.gds", f"input/{BASE}.genesis.gds"
     run:
-        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R -p plink/{BASE}_sub_mflt -k {{input[1]}} -n {config['gwas']['pc_num']} -o {BASE} -t {config['kinship_threshold']}"
+        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R -p plink/{BASE}_sub_mflt -k {{input[1]}} -n {config['gwas']['pc_num']} -o input/{BASE} -t {config['kinship_threshold']}"
         if os.path.exists(config['covariate_file']): #Not tested
                 cmd += f" -C {config['covariate_file']}"
         shell(cmd)
@@ -405,12 +411,15 @@ rule dosage_filter:
     output: f"input/{BASE}_sub.vcf.gz"
     run:
         if os.path.exists(VCF):
-            shell(f"cut -f 1,4 plink/{BASE}_sub_mflt.bim > input/vcf_snps.txt")
-            cmd = f"{CMD_PREFIX} bcftools view -R input/vcf_snps.txt"
+            #shell(f"cut -f 1,4 plink/{BASE}_sub_mflt.bim > input/vcf_snps.txt")
+            cmd = f"{CMD_PREFIX} plink2 --vcf {VCF} dosage=HDS --extract plink/{BASE}_sub_mflt.bim --const-fid 0 "
+            #cmd = f"{CMD_PREFIX} bcftools view -R input/vcf_snps.txt"
             if os.path.exists(config['samples']):
-                shell(f"cut -f 2 {config['samples']} > input/vcf_samps.txt")
-                cmd += f" -S input/vcf_samps.txt --force-samples"
-            cmd += f" -Oz -o input/{BASE}_sub.vcf.gz {VCF}; {CMD_PREFIX} tabix input/{BASE}_sub.vcf.gz"
+                #shell(f"cut -f 2 {config['samples']} > input/vcf_samps.txt")
+                cmd += f" --keep {config['samples']} "
+            cmd += f" --make-pgen --out input/{BASE}_sub {plnk_rsrc(rule, plink_run_specs)}; " \
+                   f"{CMD_PREFIX} plink2 --pfile input/{BASE}_sub --export vcf vcf-dosage=HDS-force --out input/{BASE}_sub;" \
+                   f"{CMD_PREFIX} bgzip input/{BASE}_sub.vcf; {CMD_PREFIX} tabix input/{BASE}_sub.vcf.gz"
             print(cmd)
             shell(cmd)
         else: print(f"Did not find VCF file at provided path: {VCF}")
@@ -420,7 +429,7 @@ rule genesis_dosage_prep:
     #output: f"{BASE}.dos.genesis.pdat", f"{BASE}.dos.genesis.grm.gds", f"{BASE}.dos.genesis.gds"
     output: f"input/{BASE}.dos.genesis.gds"
     threads: int(config['gwas']['cores'])
-    shell: f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R --skip_pca -d {{input[0]}} -o {os.getcwd()}/input/{BASE}.dos -c {{threads}}; rm tmp.gds"
+    shell: f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R --skip_pca -d {{input[0]}} -o input/{BASE}.dos -c {{threads}}; rm tmp.gds"
 
 rule genesis_dosage_GWAS:
     input: f"input/{BASE}.dos.genesis.gds", f"input/{BASE}.genesis.pdat", f"input/{BASE}.genesis.grm.gds"  # No control matching is done because SPA method accommodates imbalanced case/control ratios
@@ -429,14 +438,14 @@ rule genesis_dosage_GWAS:
     shell: f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['gwas']['other_predictors']} -o {BASE}.dos.genesis.txt -c {{threads}}"
 
 rule blink_convert:
-    input: f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.eigenvec", f"{BASE}.genesis.pdat"
+    input: f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.eigenvec", f"input/{BASE}.genesis.pdat"
     output: f"BLINK/{BASE}_CtlMat.pos"
     run:
         with open('scripts/blink_convert.sh', 'w') as temp_sh:
             cmd = f"rm -r -f BLINK/*; chmod -R 775 BLINK/; cp -r {config['gwas']['blink_dir']}/* BLINK; " \
                   f"cp input/{BASE}* BLINK; cd BLINK; chmod 770 *; sed 's/#//g' -i {BASE}_CtlMat.fam; " \
                   f"./blink_linux --file {BASE}_CtlMat --compress --plink; cd .. ; " \
-                  f"Rscript {CODE}/blink_prep.R -f BLINK/{BASE}_CtlMat.fam -d {BASE}.genesis.pdat -n {config['gwas']['pc_num']} -o BLINK/{BASE}_CtlMat "
+                  f"Rscript {CODE}/blink_prep.R -f BLINK/{BASE}_CtlMat.fam -d {{input[2]}} -n {config['gwas']['pc_num']} -o BLINK/{BASE}_CtlMat "
             if os.path.exists(config['covariate_file']): #Not tested
                 cmd += f"-c {config['covariate_file']}"
             temp_sh.write(cmd)
@@ -454,14 +463,14 @@ rule blink_GWAS:
 #TODO: Finish make_report for admixMap
 rule make_report:
     input: get_report_input
-    output: f"{BASE}-Mapping-report.pdf", f"{BASE}.admixmap.sig.txt", f"{BASE}.genesis.sig.txt", f"{BASE}.blink.sig.txt"
+    output: f"{BASE}-Mapping-report.pdf", f"{BASE}.admixmap.sig.txt", f"{BASE}.genesis.sig.txt"  #, f"{BASE}.blink.sig.txt"
     run:
         with open("scripts/gather_report_data.sh", 'w') as report_cmds:
             report_line = f"echo \'rmarkdown::render(\"scripts/admixMap-report.Rmd\", output_file=\"{BASE}-Mapping-report.pdf\", " \
                           f"params=list(genesis_rslt=\"{BASE}.genesis.txt\", " \
-                          f"blink_rslt=\"{BASE}.blink.txt\", " \
                           f"fam_file=\"plink/{BASE}_sub_mflt.fam\", " \
                           f"input_directory=\"input/\", " \
+                          f"blink_rslt=\"-9\", " \
                           f"gen_since_admix=\"{config['admixMapping']['gen_since_admixture']}\", " \
                           f"gwas_threshold=\"{config['gwas']['sig_threshold']}\", " \
                           f"ancestry_comps=\"{config['admixMapping']['ancestry_predictors']}\", " \ 
@@ -474,35 +483,42 @@ rule make_report:
                           f"kinplot=\"{BASE}.kinplot.png\", " \
                           f"mflt=\"accessory/missing_filter.txt\", " \
                           f"rulegraph_file=\"{BASE}-rulegraph.png\", "
-            if config['admixMapping']['skip'] != 'true':
+            #report_line += f"blink_rslt=\"{BASE}.blink.txt\", "
+            if f"{BASE}.admixmap.txt" in input:
                 report_line += f"admixMap_rslt=\"{BASE}.admixmap.txt\", global_ancestry=\"{BASE}.globalancestry.txt\","
             else:
                 report_line += f"admixMap_rslt=\"-9\", global_ancestry=\"-9\","
                 shell(f"touch {BASE}.admixmap.sig.txt")
+            if f"{BASE}.dos.genesis.txt" in input: report_line += f"dosage_rslt=\"{BASE}.dos.genesis.txt\","
+            else:
+                report_line += f"dosage_rslt=\"-9\","
+                shell(f"touch {BASE}.dos.genesis.sig.txt")
             report_line += f"config_file=\"workflow/config.yml\"))\' | R --vanilla"
             report_cmds.write(report_line)
         shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf; mv *kinplot.png figures")
 
 rule annotate_snps: # get genotype frequencies from VCF
-    input: f"{BASE}.genesis.sig.txt", f"{BASE}.blink.sig.txt"
-    output: f"{BASE}.genesis.sig.annt.txt", f"{BASE}.blink.sig.annt.txt"
+    input: f"{BASE}.genesis.sig.txt"  #, f"{BASE}.blink.sig.txt"
+    output: f"{BASE}.genesis.sig.annt.txt"   #, f"{BASE}.blink.sig.annt.txt"
     run:
-        shell(f"cut -f 1 {BASE}.genesis.sig.txt > {BASE}.genesis.sigID.txt; cut -f 1 {BASE}.blink.sig.txt > {BASE}.blink.sigID.txt")
+        shell(f"cut -f 1 {BASE}.genesis.sig.txt > {BASE}.genesis.sigID.txt")
         shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {BASE}.genesis.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.genesis.sig {plnk_rsrc(rule, plink_run_specs)}")
-        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {BASE}.blink.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.blink.sig {plnk_rsrc(rule, plink_run_specs)}")
         cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.genesis.sig.vcf | " \
               "awk '{{split($8,a,\"|\"); split(a[1],b,\"=\"); print $1,$2,$4,$5,a[4],a[3],a[2],b[2]}}' | grep -v \"#\" > {BASE}.genesis.sig.preannt.txt"
         shell(cmd)
-        cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.blink.sig.vcf | " \
-              "awk '{{split($8,a,\"|\"); split(a[1],b,\"=\"); print $1,$2,$4,$5,a[4],a[3],a[2],b[2]}}' | grep -v \"#\" > {BASE}.blink.sig.preannt.txt"
-        shell(cmd)
-        for soft in ['blink','genesis']:
+        #shell(f" cut -f 1 {BASE}.blink.sig.txt > {BASE}.blink.sigID.txt")
+        #shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {BASE}.blink.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.blink.sig {plnk_rsrc(rule, plink_run_specs)}")
+        #cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.blink.sig.vcf | " \
+        #      "awk '{{split($8,a,\"|\"); split(a[1],b,\"=\"); print $1,$2,$4,$5,a[4],a[3],a[2],b[2]}}' | grep -v \"#\" > {BASE}.blink.sig.preannt.txt"
+        #shell(cmd)
+        #for soft in ['blink','genesis']:
+        for soft in ['genesis']:
             cmd = f"{CMD_PREFIX} Rscript {CODE}/merge_annt.R -i {BASE}.{soft}.txt -s {BASE}.{soft}.sig.preannt.txt -r {config['annotation']['rsIDs']} -f {BASE}.{soft}.sig.frq.cc -o {BASE}.{soft}.sig.annt.txt"
             if os.path.exists(config['annotation']['typed_key']): cmd += f" -t {config['annotation']['typed_key']}"
             shell(cmd)
 
 rule annotate_regions: # get genotype frequencies from VCF
-    input: f"{BASE}.admixmap.txt", f"{BASE}.blink.sig.txt"
+    input: f"{BASE}.admixmap.txt"   #, f"{BASE}.blink.sig.txt"
     output: f"{BASE}.admixmap.annt.txt"
     run:
         dat = pd.read_table(input[0], sep = r"\s+")
@@ -540,9 +556,9 @@ rule combine_conditional_analysis:
     output: f"conditional-analysis/{BASE}.conditional-analysis.genesis.txt"
     shell:
         f"for f in conditional-analysis/*genesis.txt; do " \
-        "awk '{{print FILENAME, $0}}' $f | grep -v variant > conditional-analysis/tail.txt; " \
+        "awk '{{print FILENAME, $0}}' $f | grep -v variant ; done > conditional-analysis/tail.txt;" \
         f"head -q -n 1 conditional-analysis/*genesis.txt | uniq | " \
-        "awk '{{printf(\"marker_covar\\t%s\\n\", $0}}' > conditional-analysis/head.txt; " \
+        "awk '{{printf(\"marker_covar\\t%s\\n\", $0)}}' > conditional-analysis/head.txt; " \
         f"cat conditional-analysis/head.txt conditional-analysis/tail.txt > {{output}}"
 
 # rule polygenic_scores:
@@ -559,14 +575,16 @@ rule combine_conditional_analysis:
 #         else:
 #             print("Did not find snp_list")
 
+#Fine mapping should be done with dosage info.  Susie requires no missing data which is much easier to satisfy with expected dosage.
 rule fine_map:
-    input: f"plink/{BASE}_sub_mflt.bed"
+    input: f"input/{BASE}_sub.pgen"
     output: f"fine-mapping/{BASE}-{{marker}}.susie.txt"
     run:
         if not os.path.exists('fine-mapping'): os.mkdir('fine-mapping')
         chrom, pos = f"{wildcards.marker}".split("-")
-        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --snp {wildcards.marker.replace('-',':')} --window {int(config['fine_mapping']['distance'])} "
-              f"--recodeA --out fine-mapping/{wildcards.marker} {plnk_rsrc(rule, plink_run_specs)} || true")
+        shell(f"{CMD_PREFIX} plink2 --pfile input/{BASE}_sub --snp {wildcards.marker.replace('-',':')} --window {int(config['fine_mapping']['distance'])} "
+              f"--export A --out fine-mapping/{wildcards.marker} {plnk_rsrc(rule, plink_run_specs)} || true")
+        #NOTE: phenotype data is not specified in dosage input.  Need to grab and merge from data in plink folder.
 
 rule combine_fine_map:
     input: get_fine_map_input

@@ -4,9 +4,9 @@ query:
   dosage_vcf: "none" #
 samples: "all"  # This can be set to path of file containing individuals to be kept from merged query file. One sample per line.
 sites: "all" # This can be set to path of file containing SNPs to be EXCLUDED from merged query file. One SNP ID per line.
-outname: "AncInf" # MODIFY: prefix used for naming output
+outname: "CCRLP" # MODIFY: prefix used for naming output
 admixMapping:
-  skip: 'false'
+  skip: 'false'  #Case sensitive.  Set to be true or false.
   rfmix: "OUTPUT_DIRECTORY_OF RFMIX" #MODIFY
   gen_since_admixture: '8'
   cores: '12'
@@ -16,7 +16,7 @@ admixMapping:
   annotation_buffer: '100000'
 gwas:
   mbc_pval: '0.0001' # pvalue threshold for missingness-by-case
-  missingness: '0.2' # missingness threshold
+  missingness: '0.05' # missingness threshold
   maf: '0.01' # Minor allele frequency threshold
   pc_num: '4' # Number of PCs to use in GWAS
   blink_dir: "/usr/local/bin/BLINK" # Do not change
@@ -52,8 +52,8 @@ covariate_file: 'none' # Not tested; Tab-delimited file with header line specify
 cmd_prefix: "module load plink/1.90b6.10; module load htslib/1.6; module load bcftools/1.9;"
 run_settings:
   local_run: 'false'
-  cluster_config: 'workflow/cluster.yaml'
-  scheduler: 'pbs'
+  cluster_config: 'workflow/cluster_slurm.yaml'
+  scheduler: 'slurm'
 annotation:
   rsIDs: "/home/spectorl/pmonnaha/misc/hg19_rsID_key.txt"
   download_gff: 'true'
@@ -61,4 +61,7 @@ annotation:
   typed_key: 'none'
 conditional_analysis:
     snp_list: 'none'
-    distance: '100000'
+    distance: '100' #in kb!!!
+fine_mapping:
+    snp_list: 'none'
+    distance: '100' #in kb!!!

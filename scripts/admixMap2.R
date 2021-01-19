@@ -59,7 +59,8 @@ wrapGLM = function(file, predictors, family = "binomial", random = -9){
     dat = read.table(file, header = T, comment.char = "")
     pos = dat %>% distinct(spos)
     
-    glob = tibble(name = colnames(dat)) %>% filter(grepl(".glob", name)) %>% slice(1:length(name) - 1)
+    glob = tibble(name = colnames(dat)) %>% filter(grepl(".glob", name)) 
+    glob = glob[1:(nrow(glob) - 1),]
     pre.list = list() # Make list to hold sets of predictor variables
     for (a in 1:length(predictors)){
       pre.list[[length(pre.list)+1]] = c(predictors[a], as.vector(glob$name), othpre)
@@ -73,9 +74,9 @@ wrapGLM = function(file, predictors, family = "binomial", random = -9){
       anc = pre.list[[j]][1]
       exp_cols = (length(pre.list[[j]]) * 4) + 18
       # res2 = res1 %>% rename_with( ~ str_replace(.,anc,"ANC"))
-      names(res1)[18:21] = c("ANC.estimate","ANC.std.error","ANC.statistic","ANC.p.value")
+      names(res1)[19:22] = c("ANC.estimate","ANC.std.error","ANC.statistic","ANC.p.value")
       res1 %<>% mutate(anc = anc)
-      if (ncol(res1) == exp_cols){
+      if (ncol(res1) == exp_cols + 1){
         res1
       }
     }

@@ -48,10 +48,10 @@ getGlobalAnc = function(rfmix_dir, samples){
   }
   if (nrow(DF) != dfr){
     print("At least one sample name in RFMix output does NOT match any sample in the samples file.  Ensure consistent use of underscores vs hyphens.")
-  }else{
+  }#else{
     DF %<>% pivot_longer(-samp, names_to="pop", values_to="ancestry") %>% group_by(samp, pop) %>% summarize(ancestry = mean(ancestry)) %>% spread(pop,ancestry)
     colnames( DF ) <- unlist(header)
-  }
+#  }
   return(DF)
 }
 
