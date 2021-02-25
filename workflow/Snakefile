@@ -26,7 +26,7 @@ BASE = config['outname']  # Base prefix used for naming files is set as basename
 INPUT = f"input/{BASE}"
 
 # Make subdirectories
-dirs = [f"{os.getcwd()}/{x}" for x in ["input", "accessory", "plink", "plink/DS", "BLINK", "OandE", "data", "sHWE", "scripts", "figures", "figures/chrom_plots"]]
+dirs = [f"{os.getcwd()}/{x}" for x in ["input", "accessory", "plink", "plink/DS", "OandE", "data", "sHWE", "scripts", "figures", "figures/chrom_plots"]]
 for directory in dirs:
     if not os.path.exists(directory): os.mkdir(directory)
 
@@ -50,7 +50,7 @@ with open (f"{QUERY}.fam") as fam_file:
         samps.append(line[1].replace("#", ""))
 
 #Retrieve control individuals; Determine number of controls from .fam file
-assert config['samples'] == 'all' or os.path.exists(config['samples']), print("'samples' must be set to 'all' or a valid path to PLINK-format (FID IID) text file in config file")
+assert config['samples'] == 'all' or os.path.exists(config['samples']), "'samples' must be set to 'all' or a valid path to PLINK-format (FID IID) text file in config file"
 if config['samples'] == 'all': ind_num = len(samps)
 elif os.path.exists(config['samples']):
     ind_num = 0
@@ -432,33 +432,10 @@ rule genesis_dosage_GWAS:
     threads: int(config['gwas']['cores'])
     shell: f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['gwas']['other_predictors']} -o {BASE}.dos.genesis.txt -c {{threads}}"
 
-rule blink_convert:
-    input: f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.eigenvec", f"input/{BASE}.genesis.pdat"
-    output: f"BLINK/{BASE}_CtlMat.pos"
-    run:
-        with open('scripts/blink_convert.sh', 'w') as temp_sh:
-            cmd = f"rm -r -f BLINK/*; chmod -R 775 BLINK/; cp -r {config['gwas']['blink_dir']}/* BLINK; " \
-                  f"cp input/{BASE}* BLINK; cd BLINK; chmod 770 *; sed 's/#//g' -i {BASE}_CtlMat.fam; " \
-                  f"./blink_linux --file {BASE}_CtlMat --compress --plink; cd .. ; " \
-                  f"Rscript {CODE}/blink_prep.R -f BLINK/{BASE}_CtlMat.fam -d {{input[2]}} -n {config['gwas']['pc_num']} -o BLINK/{BASE}_CtlMat "
-            if os.path.exists(config['covariate_file']): #Not tested
-                cmd += f"-c {config['covariate_file']}"
-            temp_sh.write(cmd)
-        shell(f"{CMD_PREFIX} sh scripts/blink_convert.sh")
-
-rule blink_GWAS:
-    input: f"BLINK/{BASE}_CtlMat.pos"
-    output: f"{BASE}.blink.txt"
-    threads: int(config['gwas']['cores'])
-    run:
-        with open('scripts/blink_gwas.sh', 'w') as temp_sh:
-            temp_sh.write(f"cd BLINK; ./blink_linux --file {BASE}_CtlMat --binary --gwas --parallel 1 --cycle-size {threads}; cp phenotype_GWAS_result.txt ../{BASE}.blink.txt")
-        shell(f"{CMD_PREFIX} sh scripts/blink_gwas.sh")
-
 #TODO: Finish make_report for admixMap
 rule make_report:
     input: get_report_input
-    output: f"{BASE}-Mapping-report.pdf", f"{BASE}.admixmap.sig.txt", f"{BASE}.genesis.sig.txt"  #, f"{BASE}.blink.sig.txt"
+    output: f"{BASE}-Mapping-report.pdf", f"{BASE}.admixmap.sig.txt", f"{BASE}.genesis.sig.txt"
     run:
         with open("scripts/gather_report_data.sh", 'w') as report_cmds:
             report_line = f"echo \'rmarkdown::render(\"scripts/admixMap-report.Rmd\", output_file=\"{BASE}-Mapping-report.pdf\", " \
@@ -478,7 +455,6 @@ rule make_report:
                           f"kinplot=\"{BASE}.kinplot.png\", " \
                           f"mflt=\"accessory/missing_filter.txt\", " \
                           f"rulegraph_file=\"{BASE}-rulegraph.png\", "
-            #report_line += f"blink_rslt=\"{BASE}.blink.txt\", "
             if f"{BASE}.admixmap.txt" in input:
                 report_line += f"admixMap_rslt=\"{BASE}.admixmap.txt\", global_ancestry=\"{BASE}.globalancestry.txt\","
             else:
@@ -493,27 +469,21 @@ rule make_report:
         shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf; mv *kinplot.png figures")
 
 rule annotate_snps: # get genotype frequencies from VCF
-    input: f"{BASE}.genesis.sig.txt"  #, f"{BASE}.blink.sig.txt"
-    output: f"{BASE}.genesis.sig.annt.txt"   #, f"{BASE}.blink.sig.annt.txt"
+    input: f"{BASE}.genesis.sig.txt"
+    output: f"{BASE}.genesis.sig.annt.txt"
     run:
         shell(f"cut -f 1 {BASE}.genesis.sig.txt > {BASE}.genesis.sigID.txt")
         shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {BASE}.genesis.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.genesis.sig {plnk_rsrc(rule, plink_run_specs)}")
         cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.genesis.sig.vcf | " \
               "awk '{{split($8,a,\"|\"); split(a[1],b,\"=\"); print $1,$2,$4,$5,a[4],a[3],a[2],b[2]}}' | grep -v \"#\" > {BASE}.genesis.sig.preannt.txt"
         shell(cmd)
-        #shell(f" cut -f 1 {BASE}.blink.sig.txt > {BASE}.blink.sigID.txt")
-        #shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {BASE}.blink.sigID.txt --keep-allele-order --freq case-control --allow-no-sex --recode vcf --out {BASE}.blink.sig {plnk_rsrc(rule, plink_run_specs)}")
-        #cmd = f"{CMD_PREFIX} /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Xmx8G -jar /snpEff/snpEff.jar ann -t GRCh37.75 {BASE}.blink.sig.vcf | " \
-        #      "awk '{{split($8,a,\"|\"); split(a[1],b,\"=\"); print $1,$2,$4,$5,a[4],a[3],a[2],b[2]}}' | grep -v \"#\" > {BASE}.blink.sig.preannt.txt"
-        #shell(cmd)
-        #for soft in ['blink','genesis']:
         for soft in ['genesis']:
             cmd = f"{CMD_PREFIX} Rscript {CODE}/merge_annt.R -i {BASE}.{soft}.txt -s {BASE}.{soft}.sig.preannt.txt -r {config['annotation']['rsIDs']} -f {BASE}.{soft}.sig.frq.cc -o {BASE}.{soft}.sig.annt.txt"
             if os.path.exists(config['annotation']['typed_key']): cmd += f" -t {config['annotation']['typed_key']}"
             shell(cmd)
 
 rule annotate_regions: # get genotype frequencies from VCF
-    input: f"{BASE}.admixmap.txt"   #, f"{BASE}.blink.sig.txt"
+    input: f"{BASE}.admixmap.txt"
     output: f"{BASE}.admixmap.annt.txt"
     run:
         dat = pd.read_table(input[0], sep = r"\s+")
