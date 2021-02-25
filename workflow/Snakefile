@@ -19,27 +19,29 @@ TIME = i.strftime('%Y-%m-%d')
 configfile: "workflow/config.yml"
 
 # Parse config.yml file
-QUERY = config['query']['plink']
-VCF = config['query']['dosage_vcf']
-RFMIX = config['admixMapping']['rfmix']
+QUERY = config['query']['plink'] #Primary plink dataset to be used for GWAS and associated processes.
+VCF = config['query']['dosage_vcf'] #Optionally provided VCF file containing dosage.  If provided, pipeline will run a second GWAS using this as input.
+RFMIX = config['admixMapping']['rfmix'] #Optional.  If provided, the RFMix output in this directory will be used for admixture mapping using phenotypes in QUERY.
+BASE = config['outname']  # Base prefix used for naming files is set as basename of
+INPUT = f"input/{BASE}"
 
 # Make subdirectories
 dirs = [f"{os.getcwd()}/{x}" for x in ["input", "accessory", "plink", "plink/DS", "BLINK", "OandE", "data", "sHWE", "scripts", "figures", "figures/chrom_plots"]]
 for directory in dirs:
     if not os.path.exists(directory): os.mkdir(directory)
 
+#Configure the singularity command.  All necessary paths that will be used by singularity must be provided in the --bind statement
 if config['singularity']['use_singularity'] == 'true' and config['singularity']['image'] != "none":
     bind_dirs = [QUERY, config['samples'], config['annotation']['rsIDs'], config['annotation']['typed_key']]
     bind_paths = ",".join([x for x in set([os.path.dirname(x) for x in bind_dirs] + dirs) if os.path.isdir(x)])
-    if config['admixMapping']['skip'] != 'true': bind_paths += f",{RFMIX}"
+    if config['admixMapping']['skip'].lower() != 'true': bind_paths += f",{RFMIX}"
     CMD_PREFIX = f"set +u; {config['singularity']['module']}; singularity exec --bind {bind_paths} {config['singularity']['image']}"
     CODE = config['singularity']['code']
 else:
     CMD_PREFIX = config['cmd_prefix']
     CODE = config['dir']['code']
 
-BASE = config['outname']  # Base prefix used for naming files is set as basename of
-INPUT = f"input/{BASE}"
+
 
 samps = [] # Create list containing all samples in original input fam file
 with open (f"{QUERY}.fam") as fam_file:
@@ -66,7 +68,7 @@ if num_jobs <= 1: # Attempt to catch an error that arises in instances where the
 
 # Determine jobs to run locally vs on cluster.  Also coordinate resource management for PLINK.
 plink_run_specs = {'__default__': ""} # Set default to empty string in case of local run.  i.e. default to plink's auto-detection of resources
-plink_rules = ['__default__','subset_individuals',"filter_missingness_by_case","downsample_controls","LD_prune","calcFreq","calcIBS","IBD_filter_ctrls","filter_sHWE_SNPs","IBD_filter","controlMatch","calcPCA","annotate_snps","dosage_filter"]
+plink_rules = ['__default__','subset_individuals',"filter_missingness_by_case","downsample_controls","LD_prune","calcFreq","calcIBS","IBD_filter_ctrls","filter_sHWE_SNPs","IBD_filter","controlMatch","calcPCA","annotate_snps","dosage_filter"] #List all rules that involve the use of plink
 if config['run_settings']['local_run'] == 'true':
     localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, blink_GWAS, extract_optimum_popnum, cat_admixMap
 else:
@@ -76,20 +78,20 @@ else:
     clusterfile = yaml.load(open(config['run_settings']['cluster_config']), Loader=yaml.FullLoader)
     for rule in clusterfile.keys(): # Purpose of this code is to make sure plink requests same amount of memory/threads as specified in cluster.yaml file
         if rule in plink_rules:
-            if config['run_settings']['scheduler'] == 'slurm': plink_run_specs[rule] = f"--memory {clusterfile[rule]['mem'].replace('G','000')} --threads {clusterfile[rule]['ntasks']}"
-            elif config['run_settings']['scheduler'] == 'pbs':  plink_run_specs[rule] = f"--memory {clusterfile[rule]['mem'].replace('b','').replace('m','').replace('g','000')} --threads 1"
+            if config['run_settings']['scheduler'] == 'slurm': plink_run_specs[rule] = f"--memory {int(int(clusterfile[rule]['mem'].replace('G','000'))*0.9)} --threads {clusterfile[rule]['ntasks']}" #0.9 multiplication is because plink can be greedy with memory and use more than requested.
+            elif config['run_settings']['scheduler'] == 'pbs':  plink_run_specs[rule] = f"--memory {clusterfile[rule]['mem'].replace('b','').replace('m','').replace('g','000')} --threads 1" #Deprecated
 
 
 #### DEFINE FUNCTIONS #####
-def get_all_inputs(wildcards):
+def get_all_inputs(wildcards): #Primary rule whose input values determine which outputs (and corresponding rules) will be run by snakemake
     input_list = ["accessory/.sHWE_pass.txt", f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png",
                   f"plink/{BASE}_LDp_sHWE.bed", f"{QUERY}.bed", f"plink/{BASE}.eigenvec",
                   f"accessory/samples.txt", f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.genome.gz",
                   f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf", f"{BASE}.genesis.sig.annt.txt"]
-    #input_list += [f"{BASE}.blink.txt", f"{BASE}.blink.sig.annt.txt"]
-    if config['admixMapping']['skip'] != 'true':
+    #input_list += [f"{BASE}.blink.txt", f"{BASE}.blink.sig.annt.txt"] #Uncomment to enable GWAS with BLINK.  Newer version of BLINK was causing issues with singularity.
+    if config['admixMapping']['skip'] != 'true': #Do not include admixture mapping in desired results, unless requested.
         input_list += [f"{BASE}.admixmap.txt", f"{BASE}.admixmap.annt.txt", f"{BASE}.admixmap.txt"]
-    if os.path.exists(VCF): input_list += [f"{BASE}.dos.genesis.txt"]
+    if os.path.exists(VCF): input_list += [f"{BASE}.dos.genesis.txt"] #Requests dosage GWAS to be run if a dosage VCF is provided.
     return(input_list)
 
 def get_cM_inputs(wildcards):
@@ -98,7 +100,7 @@ def get_cM_inputs(wildcards):
         input_list.append(f"plink/{BASE}.genome.gz")
     return(input_list)
 
-def get_dataprep_input(wildcards):
+def get_dataprep_input(wildcards): #
     input_list = ["accessory/samples.txt"]
     inFile=[]
     if config['admixMapping']['skip'] != 'true':
@@ -109,7 +111,7 @@ def get_dataprep_input(wildcards):
 
 def get_report_input(wildcards):
     input_list = [f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt"]
-    #input_list += [f"{BASE}.blink.txt"]
+    #input_list += [f"{BASE}.blink.txt"] #Uncomment to enable GWAS with BLINK.  Newer version of BLINK was causing issues with singularity.
     if config['admixMapping']['skip'] != 'true': input_list += [f"{BASE}.admixmap.txt", f"{BASE}.globalancestry.txt"]
     if os.path.exists(VCF): input_list += [f"{BASE}.dos.genesis.txt"]
     return(input_list)
@@ -132,7 +134,7 @@ def get_fine_map_input(wildcards):
             inputList.append(f"fine-mapping/{BASE}-{marker}.susie.txt")
     return(inputList)
 
-def plnk_rsrc(rule_name, plink_specs):
+def plnk_rsrc(rule_name, plink_specs): #This function retrieves resource string for plink for the rule name in question
     try: resources = plink_specs[rule_name]
     except KeyError: resources = plink_specs['__default__']
     return(resources)
@@ -141,7 +143,7 @@ def plnk_rsrc(rule_name, plink_specs):
 rule all:
     input: get_all_inputs
 
-rule clean:
+rule clean: #Run 'snakemake clean' to clean out results.  Useful for rerunning from scratch.
     shell:
         "rm -r input; rm -r plink/*; rm -r data; rm *txt; rm accessory/*"
 
@@ -149,7 +151,7 @@ rule make_rulegraph:
     output: f"{BASE}-rulegraph.png"
     shell: f"snakemake --rulegraph --configfile workflow/config.yml > accessory/Pipeline_DAG.dot; {CMD_PREFIX} dot -Tpng accessory/Pipeline_DAG.dot > {{output}}"
 
-rule subset_individuals:
+rule subset_individuals: #Subset the input dataset to include a user-specified set of samples and/or snps
     input: f"{QUERY}.bed"
     output: f"plink/{BASE}_sub.bed", f"plink/{BASE}_sub_ctrls.bed"
     params: awk_string = "\'{if($6==1) print $1,$2}' " + f"plink/{BASE}_sub.fam > accessory/control_samples.txt"
@@ -158,12 +160,11 @@ rule subset_individuals:
         if os.path.exists(config['samples']): cmd += f" --keep {config['samples']}"
         if os.path.exists(config['sites']): cmd += f" --exclude {config['sites']}"
         cmd += f"; sed -i 's/#//g' plink/{BASE}_sub.fam"
-        print(cmd)
         shell(cmd)
         shell(f"{CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_sub_ctrls {plnk_rsrc(rule, plink_run_specs)}")
 
 
-rule filter_missingness_by_case:
+rule filter_missingness_by_case: #
     input: f"plink/{BASE}_sub.bed", f"plink/{BASE}_sub_ctrls.bed"
     output: f"plink/{BASE}_sub_mflt.bed", f"plink/{BASE}_sub_ctrls_mflt.bed"
     run:
@@ -263,7 +264,6 @@ rule optimize_sHWE:
     shell:
         f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS0 -d {{wildcards.d}} -o sHWE/{BASE}_sHWE_{{wildcards.d}}"
 
-#TODO Add checks to only open files that are not 0 bytes.  For whatever reason, the sHWE is failing for some population numbers.
 rule extract_optimum_popnum:
     input: expand(f"sHWE/{BASE}_sHWE_{{d}}", d=config['sHWE']['pop_nums'].split(","))
     output: f"sHWE/.optimum_popnum.txt", "sHWE/entropy.txt"
@@ -345,7 +345,6 @@ rule IBD_filter:
                   f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt {plnk_rsrc(rule, plink_run_specs)}")
 
 rule controlMatch:
-    # TODO: add option for user to provide samples file
     input: get_cM_inputs
     output: f"accessory/samples.txt", f"input/{BASE}_CtlMat.bed", f"input/{BASE}_PCA.bed"
     run:
@@ -411,11 +410,8 @@ rule dosage_filter:
     output: f"input/{BASE}_sub.vcf.gz"
     run:
         if os.path.exists(VCF):
-            #shell(f"cut -f 1,4 plink/{BASE}_sub_mflt.bim > input/vcf_snps.txt")
             cmd = f"{CMD_PREFIX} plink2 --vcf {VCF} dosage=HDS --extract plink/{BASE}_sub_mflt.bim --const-fid 0 "
-            #cmd = f"{CMD_PREFIX} bcftools view -R input/vcf_snps.txt"
             if os.path.exists(config['samples']):
-                #shell(f"cut -f 2 {config['samples']} > input/vcf_samps.txt")
                 cmd += f" --keep {config['samples']} "
             cmd += f" --make-pgen --out input/{BASE}_sub {plnk_rsrc(rule, plink_run_specs)}; " \
                    f"{CMD_PREFIX} plink2 --pfile input/{BASE}_sub --export vcf vcf-dosage=HDS-force --out input/{BASE}_sub;" \
@@ -426,7 +422,6 @@ rule dosage_filter:
 
 rule genesis_dosage_prep:
     input: f"input/{BASE}_sub.vcf.gz"
-    #output: f"{BASE}.dos.genesis.pdat", f"{BASE}.dos.genesis.grm.gds", f"{BASE}.dos.genesis.gds"
     output: f"input/{BASE}.dos.genesis.gds"
     threads: int(config['gwas']['cores'])
     shell: f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R --skip_pca -d {{input[0]}} -o input/{BASE}.dos -c {{threads}}; rm tmp.gds"
@@ -525,8 +520,15 @@ rule annotate_regions: # get genotype frequencies from VCF
         dat = dat[dat['ANC.p.value'] < float(config['admixMapping']['sig_threshold'])]
         dat[['chm', 'spos', 'epos', 'ANC.estimate', 'ANC.std.error', 'ANC.statistic', 'ANC.p.value', 'anc']].to_csv(f"{BASE}.admixmap.tmp.bed", header=False, sep = "\t", index=False)
         gff = f"{os.getcwd()}/accessory/{os.path.basename(config['annotation']['gff'])}"
-        if config['annotation']['download_gff'] == 'true': shell(f" wget {config['annotation']['gff']} -O {gff}")
-        else: shell(f"cp {config['annotation']['gff']} {gff}")
+        genome = f"{os.getcwd()}/accessory/{os.path.basename(config['annotation']['genome'])}"
+        if config['annotation']['download_refs'] == 'true':
+            shell(f" wget {config['annotation']['gff']} -O {gff}")
+            shell(f" wget {config['annotation']['genome']} -O {gff}")
+        elif os.path.exists(config['annotation']['gff']) and os.path.exists(config['annotation']['genome']):
+            shell(f"cp {config['annotation']['gff']} {gff}")
+            shell(f"cp {config['annotation']['genome']} {gff}")
+        else:
+            print("Could not find reference .gff and/or .genome file.  Check config file that paths are correctly specified and/or download requested.")
         shell(f"{CMD_PREFIX} bedtools slop -i {BASE}.admixmap.tmp.bed -g {os.getcwd()}/accessory/hg19.genome -b {config['admixMapping']['annotation_buffer']} > {BASE}.admixmap.bed")
         cmd = f"{CMD_PREFIX} bedtools intersect -a {BASE}.admixmap.bed -b {gff} -loj | "  \
         "awk '{{if($11==\"gene\") print $0}}' | awk '{{split($NF,a,\";\"); $NF=\"\"; for(x in a) if(a[x] ~ /Name=/) print $0,a[x]}}' | sed 's/Name=//' > {BASE}.admixmap.preannt.txt"

@@ -1,4 +1,4 @@
-# Admixture and association mapping pipeline
+d# Admixture and association mapping pipeline
 
 This pipeline implements admixture mapping on the output of the [AncInf](https://github.com/pmonnahan/AncInf) pipeline (i.e. RFMix output) and/or association mapping on the output of the [pre-imputation](https://github.com/pmonnahan/DataPrep) or [post-imputation](https://github.com/pmonnahan/DataPrep/postImpute) QC pipelines.  It is not completely necessary to generate the input via the mentioned pipelines, although doing so would likely reduce the chances of encountering an issue.  Prior to mapping, input data is parsed and QC'ed to identify (and optionally filter) related samples, calculate principal components, and perform genomic control matching. A more detailed description of each of these steps is provided at the bottom. 
 
@@ -31,16 +31,22 @@ This pipeline implements admixture mapping on the output of the [AncInf](https:/
 ## Requirements
  
 ### Snakemake
-The pipeline is coordinated and run on an HPC (or locally) using _Snakemake_.  On UMN's HPC, snakemake can be installed by:
-
+The pipeline is coordinated and run on an HPC (or locally) using _Snakemake_.  To install snakemake, first create a virtual environment via:
+  
     module load python3/3.6.3_anaconda5.0.1
-    conda install -c conda-forge -c bioconda snakemake python=3.6
+    conda install -c conda-forge mamba
+    mamba create -c conda-forge -c bioconda -n <your_environment_name> snakemake
+  
+This will create a new virtual environment and install `snakemake`.  Then, activate this environment and perform following installations:
 
-The 'module load' command will likely need to be run each time prior to use of Snakemake.
+    conda activate <your_environment_name>
+    conda install numpy yaml pandas
 
-Alternatively, you can try installing snakemake via _pip_:
+Anytime you need to run the pipeline, activate this environment beforehand via:
 
-    pip3 install --user snakemake pyaml
+    conda activate <environment_name>
+
+If you choose not to create an environment, you must ensure that these packages are installed and available for your python installation.
 
 ### Singularity
 
@@ -53,7 +59,7 @@ Singularity settings in config.yml
     singularity:
       use_singularity: 'true'
       image: '/home/pmonnaha/pmonnaha/singularity/AncestryInference.sif
-
+      
 
 ## Running the workflow
 
@@ -80,7 +86,7 @@ However, multiple steps in the pipeline have high resource demands, and so are u
 
     snakemake --cluster "qsub -l {cluster.l} -M {cluster.M} -A {cluster.A} -m {cluster.m} -o {cluster.o} -e {cluster.e} -r {cluster.r}" --cluster-config workflow/cluster.yaml -j 32
 
-where -j specifies the number of jobs that can be submitted at once.  Note that the 'qsub' command is specific to the commonly-used PBS scheduler.  To run on a different HPC scheduler, the command would need to be modified accordingly.  For example, to coordinate submission to a slurm scheduler, the following command would be used:
+where -j specifies the number of jobs that can be submitted at once.  Note that the 'qsub' command is specific to the commonly-used **PBS** scheduler.  To run on a different HPC scheduler, the command would need to be modified accordingly.  For example, to coordinate submission to a **slurm** scheduler, the following command would be used:
 
     snakemake --cluster "sbatch --no-requeue --time={cluster.time} --mem-per-cpu={cluster.mem-per-cpu} --ntasks={cluster.ntasks} --nodes={cluster.nodes} --mail-user={cluster.mail-user} --mail-type={cluster.mail-type} -o {cluster.o} -e {cluster.e} -A {cluster.A}"" --cluster-config workflow/cluster_yale.yaml -j 32
 
