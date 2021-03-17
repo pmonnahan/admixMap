@@ -109,14 +109,14 @@ if(!opt$skip_pca){
   kinship <- mypcrelate$kinBtwn
   
   png(paste0(outName,'.kinplot.png'))
-  ggplot(kinship, aes(k0, kin)) +
+  print(ggplot(kinship, aes(k0, kin)) +
     geom_hline(yintercept=2^(-seq(3,9,2)/2), linetype="dashed", color="grey") +
     geom_point(alpha=0.5) +
     ylab("kinship estimate") +
-    theme_bw()
+    theme_bw())
   dev.off()
   
-  # Not tested
+  #Add covariates to GWAS data.
   Covars = c("sex")
   if (opt$covarFile != "none"){
     add_covar = read.table(opt$covarFile, comment.char = "")

@@ -1,4 +1,4 @@
-d# Admixture and association mapping pipeline
+# Admixture and association mapping pipeline
 
 This pipeline implements admixture mapping on the output of the [AncInf](https://github.com/pmonnahan/AncInf) pipeline (i.e. RFMix output) and/or association mapping on the output of the [pre-imputation](https://github.com/pmonnahan/DataPrep) or [post-imputation](https://github.com/pmonnahan/DataPrep/postImpute) QC pipelines.  It is not completely necessary to generate the input via the mentioned pipelines, although doing so would likely reduce the chances of encountering an issue.  Prior to mapping, input data is parsed and QC'ed to identify (and optionally filter) related samples, calculate principal components, and perform genomic control matching. A more detailed description of each of these steps is provided at the bottom. 
 
@@ -195,7 +195,7 @@ sHWE parameters in config file:
 Only markers that are tested for sHWE will be used for calculating PCs, IBD/IBS, relatedness, etc.  While a full input dataset might contain several million SNPs, only several hundred thousand SNPs are sufficient for making these calculations.  Therefore, the default 'test_threshold' is likely sufficient.
 
 #### Control Matching  
-Control matching is optionally performed for BLINK and admixture mapping.  Logistic models implemented in GENESIS are able to handle highly imbalanced case/control ratios by way of a Saddle-Point Approximation for p-values, so control matching is not necessary.  
+Control matching is optionally performed for admixture mapping.  Logistic models implemented in GENESIS are able to handle highly imbalanced case/control ratios by way of a Saddle-Point Approximation for p-values, so control matching is not necessary.  
 
 Control matching behavior is set by the following lines in the config file:
 
@@ -217,7 +217,7 @@ A genetic-relatedness matrix (GRM) is then calculated via [PCRelate](https://www
 Additional information on the PCs and GRM can be found in the PDF report that is automatically generated at the end of the pipeline.
     
 ### Genome Wide Association Mapping (GWAS)
-GWAS is performed via two softwares: [BLINK](http://zzlab.net/blink) and [GENESIS](https://github.com/UW-GAC/GENESIS).  BLINK implements a novel multi-locus methodology that is fast, capable of handling large datasets, and claims greater statistical power.  However, the program is incapable of generating coefficient estimates necessary for calculating odds ratios, polygenic risk scores, etc.  GENESIS scales poorly with sample size, but is well-documented, written in R (and thus more transparent), and provides much more detailed output.
+GWAS is performed via [GENESIS](https://github.com/UW-GAC/GENESIS).  GENESIS scales poorly with sample size, but is well-documented, written in R (and thus more transparent), and provides much more detailed output.
 
 Association Mapping settings in config.yml:
 
@@ -229,7 +229,6 @@ Association Mapping settings in config.yml:
       cores: '4' # Number of cores to use in GWAS.
       sig_threshold: '0.000005' # pvalue threshold for annotating SNPs
       other_predictors: 'sex' # Covariates to be used in GWAS.
-      blink_dir: "/usr/local/bin/BLINK" # Do not change
 
 For the 'other_predictors' entry, the 'sex' info is taken from the .fam file that is associated with the 'query' entry of the config file.  Additional covariates can be listed here, but they must be provided in a separate file whose path is provided at the following entry.
 
@@ -267,7 +266,6 @@ All output will be contained in the parent directory labelled with the prefix pr
 | Result  | Suffix |
 | ------------- | ------------- |
 | GENESIS GWAS  | .genesis.txt  |
-| BLINK GWAS  | .blink.txt  |
 | Admixture Mapping  | .admixmap.txt  |
 | PC-AiR Variance Proportions  | .pcair.varprop  |
 | Phenotype Data  | .genesis.pdat  |

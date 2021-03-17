@@ -39,27 +39,27 @@ opt <- parse_args(OptionParser(option_list=option_list))
 ######################### Define functions #########################
 
 readMSP = function(filename, cases=NA, filter_case = FALSE, label_case = TRUE){
-  q1h = read.table(filename, header=F, comment.char = "", nrows=2, fill = TRUE, stringsAsFactors = FALSE)
-  q1p = q1h[1,] %>% pivot_longer(colnames(q1h)) %>% filter(value != "") %>% separate(value, c("Pop","anc")) %>% filter(row_number()>2)
-  q1h = q1h[2,-6]
-  q1 = read.table(filename, header=F, comment.char = "", skip = 2)
+  q1h = read.table(filename, header=F, comment.char = "", nrows=2, fill = TRUE, stringsAsFactors = FALSE) #First two lines of msp file are header
+  q1p = q1h[1,] %>% pivot_longer(colnames(q1h)) %>% filter(value != "") %>% separate(value, c("Pop","anc")) %>% filter(row_number()>2) #First line of header contains the key for different ancestries that were inferred
+  q1h = q1h[2,-6] # Remove column for 'n' 
+  q1 = read.table(filename, header=F, comment.char = "", skip = 2) #Read in main body of .msp file
   colnames( q1 ) <- unlist(q1h)
   q1 %<>% pivot_longer(-c(`#chm`,spos,epos,sgpos,egpos,snps), names_to="sample", values_to="anc")
-  q1 %<>% separate(sample, c("tmp.sample","hap"),"[.]") %>% mutate(chm = `#chm`, sample = str_replace(tmp.sample, "#", "")) %>% select(-c(`#chm`, tmp.sample))
-  q1 %<>% group_by(chm,spos,epos,sgpos,egpos,snps, sample) %>% count(anc) %>% ungroup() %>% mutate(anc = as.character(anc)) %>% left_join(q1p, by = "anc") %>% select(-c(anc,name)) %>% pivot_wider(id_cols = c(chm,spos,epos,sgpos, egpos,snps,sample), names_from=Pop, values_from=n, values_fill = list(n=0))
+  q1 %<>% separate(sample, c("tmp.sample","hap"),"[.]") %>% mutate(chm = `#chm`, sample = str_replace(tmp.sample, "#", "")) %>% select(-c(`#chm`, tmp.sample)) #Individuals have an ancestry call for each haplotype
+  q1 %<>% group_by(chm,spos,epos,sgpos,egpos,snps, sample) %>% count(anc) %>% ungroup() %>% mutate(anc = as.character(anc)) %>% left_join(q1p, by = "anc") %>% select(-c(anc,name)) %>% pivot_wider(id_cols = c(chm,spos,epos,sgpos, egpos,snps,sample), names_from=Pop, values_from=n, values_fill = list(n=0)) #Use ancestry key to relabel values with character string (e.g. 1=AMR)
   return(q1)
 }
 
 preMunge = function(inFile, samples, globalAncestry, fam_pheno, other_pheno, outPre){
   anc_dat = readMSP(inFile)
-  Q = read.table(globalAncestry, header = T)
+  Q = read.table(globalAncestry, header = T) 
   pdat = read.table(fam_pheno, comment.char = "")
-  pdat %<>% mutate(sample2 = str_replace(V2, "#", ""), sex = V5, pheno = V6 - 1) %>% separate(sample2, c("sample"), "_") %>% select(sample,sex,pheno) %>% filter(pheno >= 0) %>% left_join(Q, by="sample")
-  if (other_pheno != "none"){
+  pdat %<>% mutate(sample2 = str_replace(V2, "#", ""), sex = V5, pheno = V6 - 1) %>% separate(sample2, c("sample"), "_") %>% select(sample,sex,pheno) %>% filter(pheno >= 0) %>% left_join(Q, by="sample") #Combine global ancestry and phenotypes
+  if (other_pheno != "none"){ #Add other covariates if provided
     odat = read.table(other_pheno, comment.char="", head = T)
     pdat %<>% left_join(odat, by="sample")
   }
-  anc_dat %<>% left_join(pdat, by="sample", suffix = c("",".glob"))
+  anc_dat %<>% left_join(pdat, by="sample", suffix = c("",".glob")) #Combine phenotype/global ancestry results with local ancestry results
   if (samples != "all"){
     samples = read.table(samples, comment.char = "")
     anc_dat %<>% filter(sample %in% samples$V1)
@@ -67,5 +67,5 @@ preMunge = function(inFile, samples, globalAncestry, fam_pheno, other_pheno, out
   write.table(anc_dat, outPre, quote=F, row.names = F, col.names = T)
 }
 
-
+#Call main function
 preMunge(opt$inputFile, opt$samplesFile, opt$globalAncestry, opt$famFile, opt$phenoFile, opt$outPrefix)

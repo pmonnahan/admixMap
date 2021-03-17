@@ -1,3 +1,5 @@
+######################### Load packages #########################
+
 .libPaths(c("/usr/local/lib/R/site-library", .libPaths()))
 
 suppressPackageStartupMessages(library(stringr))
@@ -29,19 +31,22 @@ option_list <- list(
 opt <- parse_args(OptionParser(option_list=option_list))
 
 ######################### Define functions #########################
+
 getGlobalAnc = function(rfmix_dir, samples){
-  files <- list.files(rfmix_dir, pattern = "\\.Q$")
+  files <- list.files(rfmix_dir, pattern = "\\.Q$") #make list containing all .Q files from RFMix directory
   DF = data.frame()
   for (i in 1:length(files)){
     if (i==1){
+      #Header is two lines in .Q files.  Only need to parse and store this info from the first file
       header <- read.table(paste(rfmix_dir, files[i], sep="/"), nrows = 1, skip = 1, header = FALSE, comment.char = "", stringsAsFactors = FALSE)
       header[,1] = 'sample'
     }
-    dat = read.table(paste(rfmix_dir, files[i], sep="/"), skip=2, header=F, comment.char = "")
+    dat = read.table(paste(rfmix_dir, files[i], sep="/"), skip=2, header=F, comment.char = "") #Read in body of file (skip header)
     DF = rbind(DF, dat)
   }
-  DF %<>% mutate(samp = str_replace(V1, "#", "")) %>% select(-V1)
+  DF %<>% mutate(samp = str_replace(V1, "#", "")) %>% select(-V1) #Old catch all in case # is in sample names
   dfr = nrow(DF)
+  #Filter samples if a sample file is provided
   if (samples != "all"){
     samples = read.table(samples, comment.char = "")
     DF %<>% filter(samp %in% samples$V1)
@@ -49,8 +54,8 @@ getGlobalAnc = function(rfmix_dir, samples){
   if (nrow(DF) != dfr){
     print("At least one sample name in RFMix output does NOT match any sample in the samples file.  Ensure consistent use of underscores vs hyphens.")
   }#else{
-    DF %<>% pivot_longer(-samp, names_to="pop", values_to="ancestry") %>% group_by(samp, pop) %>% summarize(ancestry = mean(ancestry)) %>% spread(pop,ancestry)
-    colnames( DF ) <- unlist(header)
+    DF %<>% pivot_longer(-samp, names_to="pop", values_to="ancestry") %>% group_by(samp, pop) %>% summarize(ancestry = mean(ancestry)) %>% spread(pop,ancestry) #Average each global ancestry over chromosomes for an individual 
+    colnames( DF ) <- unlist(header) #Add header to dataset
 #  }
   return(DF)
 }

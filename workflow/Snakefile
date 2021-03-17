@@ -32,7 +32,7 @@ for directory in dirs:
 
 #Configure the singularity command.  All necessary paths that will be used by singularity must be provided in the --bind statement
 if config['singularity']['use_singularity'] == 'true' and config['singularity']['image'] != "none":
-    bind_dirs = [QUERY, config['samples'], config['annotation']['rsIDs'], config['annotation']['typed_key']]
+    bind_dirs = [x for x in [QUERY, VCF, config['samples'], config['annotation']['rsIDs'], config['annotation']['typed_key']] if os.path.exists(x) and x!="/"]
     bind_paths = ",".join([x for x in set([os.path.dirname(x) for x in bind_dirs] + dirs) if os.path.isdir(x)])
     if config['admixMapping']['skip'].lower() != 'true': bind_paths += f",{RFMIX}"
     CMD_PREFIX = f"set +u; {config['singularity']['module']}; singularity exec --bind {bind_paths} {config['singularity']['image']}"
@@ -70,7 +70,7 @@ if num_jobs <= 1: # Attempt to catch an error that arises in instances where the
 plink_run_specs = {'__default__': ""} # Set default to empty string in case of local run.  i.e. default to plink's auto-detection of resources
 plink_rules = ['__default__','subset_individuals',"filter_missingness_by_case","downsample_controls","LD_prune","calcFreq","calcIBS","IBD_filter_ctrls","filter_sHWE_SNPs","IBD_filter","controlMatch","calcPCA","annotate_snps","dosage_filter"] #List all rules that involve the use of plink
 if config['run_settings']['local_run'] == 'true':
-    localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, blink_GWAS, extract_optimum_popnum, cat_admixMap
+    localrules: all, calcFreq, calcIBS, catIBS, calcPCA, controlMatch, admixMap, extract_optimum_popnum, cat_admixMap
 else:
     localrules: all, extract_optimum_popnum, cat_admixMap
     assert config['run_settings']['scheduler'] in ['pbs', 'slurm'], print(f"\nThe scheduler specified at run_settings -> scheduler: \'{config['run_settings']['scheduler']}\' is invalid.\n")
@@ -87,20 +87,20 @@ def get_all_inputs(wildcards): #Primary rule whose input values determine which 
     input_list = ["accessory/.sHWE_pass.txt", f"sHWE/.optimum_popnum.txt", f"{BASE}-rulegraph.png",
                   f"plink/{BASE}_LDp_sHWE.bed", f"{QUERY}.bed", f"plink/{BASE}.eigenvec",
                   f"accessory/samples.txt", f"input/{BASE}_CtlMat.bed", f"plink/{BASE}.genome.gz",
-                  f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf", f"{BASE}.genesis.sig.annt.txt"]
+                  f"{BASE}.genesis.txt", f"{BASE}-Mapping-report.pdf"] #, f"{BASE}.genesis.sig.annt.txt"
     #input_list += [f"{BASE}.blink.txt", f"{BASE}.blink.sig.annt.txt"] #Uncomment to enable GWAS with BLINK.  Newer version of BLINK was causing issues with singularity.
     if config['admixMapping']['skip'] != 'true': #Do not include admixture mapping in desired results, unless requested.
-        input_list += [f"{BASE}.admixmap.txt", f"{BASE}.admixmap.annt.txt", f"{BASE}.admixmap.txt"]
+        input_list += [f"{BASE}.admixmap.txt", f"{BASE}.admixmap.txt"] #, f"{BASE}.admixmap.annt.txt"
     if os.path.exists(VCF): input_list += [f"{BASE}.dos.genesis.txt"] #Requests dosage GWAS to be run if a dosage VCF is provided.
     return(input_list)
 
-def get_cM_inputs(wildcards):
+def get_cM_inputs(wildcards): #Conditionally determine control-matching input
     input_list = [f"plink/{BASE}_LDp_sHWE_IBDflt.bed"]
-    if config['match_controls'] == 'true':
+    if config['match_controls'] == 'true': #IBD results are needed if control matching is requested.  This function will request these results to be produced if match_controls is set in config.
         input_list.append(f"plink/{BASE}.genome.gz")
     return(input_list)
 
-def get_dataprep_input(wildcards): #
+def get_dataprep_input(wildcards): #conditionally determine dataprep input for admixture mapping
     input_list = ["accessory/samples.txt"]
     inFile=[]
     if config['admixMapping']['skip'] != 'true':
@@ -111,7 +111,6 @@ def get_dataprep_input(wildcards): #
 
 def get_report_input(wildcards):
     input_list = [f"{BASE}-rulegraph.png", f"{BASE}.genesis.txt"]
-    #input_list += [f"{BASE}.blink.txt"] #Uncomment to enable GWAS with BLINK.  Newer version of BLINK was causing issues with singularity.
     if config['admixMapping']['skip'] != 'true': input_list += [f"{BASE}.admixmap.txt", f"{BASE}.globalancestry.txt"]
     if os.path.exists(VCF): input_list += [f"{BASE}.dos.genesis.txt"]
     return(input_list)
@@ -140,14 +139,15 @@ def plnk_rsrc(rule_name, plink_specs): #This function retrieves resource string 
     return(resources)
 
 #### DEFINE RULES FOR PIPELINE EXECUTION #####
-rule all:
+
+rule all: #Main rule that determines which files snakemake will attempt to produce upon running
     input: get_all_inputs
 
 rule clean: #Run 'snakemake clean' to clean out results.  Useful for rerunning from scratch.
     shell:
         "rm -r input; rm -r plink/*; rm -r data; rm *txt; rm accessory/*"
 
-rule make_rulegraph:
+rule make_rulegraph: #Create a PNG of the DAG used in this workflow
     output: f"{BASE}-rulegraph.png"
     shell: f"snakemake --rulegraph --configfile workflow/config.yml > accessory/Pipeline_DAG.dot; {CMD_PREFIX} dot -Tpng accessory/Pipeline_DAG.dot > {{output}}"
 
@@ -159,63 +159,63 @@ rule subset_individuals: #Subset the input dataset to include a user-specified s
         cmd = f"{CMD_PREFIX} plink --bfile {QUERY} --keep-allele-order --make-bed --maf {config['gwas']['maf']} --allow-no-sex --out plink/{BASE}_sub {plnk_rsrc(rule, plink_run_specs)}"
         if os.path.exists(config['samples']): cmd += f" --keep {config['samples']}"
         if os.path.exists(config['sites']): cmd += f" --exclude {config['sites']}"
-        cmd += f"; sed -i 's/#//g' plink/{BASE}_sub.fam"
+        cmd += f"; sed -i 's/#//g' plink/{BASE}_sub.fam" #This removes the # character from any sample names which will trip up R in downstream steps
         shell(cmd)
         shell(f"{CMD_PREFIX} awk {{params.awk_string}}; {CMD_PREFIX} plink --bfile plink/{BASE}_sub --keep accessory/control_samples.txt --make-bed --out plink/{BASE}_sub_ctrls {plnk_rsrc(rule, plink_run_specs)}")
 
 
-rule filter_missingness_by_case: #
+rule filter_missingness_by_case: #Filter dataset for SNPs with user-defined missingness threshold as well as a test for an association between missingness and case/control status.  This is implemented here in case subsetting the dataset in the first step generated SNPs that violate either of these QC thresholds
     input: f"plink/{BASE}_sub.bed", f"plink/{BASE}_sub_ctrls.bed"
     output: f"plink/{BASE}_sub_mflt.bed", f"plink/{BASE}_sub_ctrls_mflt.bed"
     run:
         import pandas as pd
-        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --test-missing --allow-no-sex --out plink/{BASE}_sub")
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --test-missing --allow-no-sex --out plink/{BASE}_sub") #Use plink to calculate stats
         shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --missing --allow-no-sex --out plink/{BASE}_sub")
-        mbc = pd.read_table(f"plink/{BASE}_sub.missing", sep = r"\s+")
+        mbc = pd.read_table(f"plink/{BASE}_sub.missing", sep = r"\s+") #Read output of PLINK
         mis = pd.read_table(f"plink/{BASE}_sub.lmiss", sep = r"\s+")
-        dat = pd.concat([mbc[mbc['P'] < float(config['gwas']['mbc_pval'])]['SNP'], mis[mis['F_MISS'] > float(config['gwas']['missingness'])]['SNP']]).drop_duplicates()
-        dat.to_csv('accessory/missing_filter.txt', header=False,index=False)
-        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --exclude accessory/missing_filter.txt --keep-allele-order --make-bed --out plink/{BASE}_sub_mflt")
-        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls --exclude accessory/missing_filter.txt --keep-allele-order --make-bed --out plink/{BASE}_sub_ctrls_mflt")
+        dat = pd.concat([mbc[mbc['P'] < float(config['gwas']['mbc_pval'])]['SNP'], mis[mis['F_MISS'] > float(config['gwas']['missingness'])]['SNP']]).drop_duplicates() #Extract SNPs to exclude from PLINK results
+        dat.to_csv('accessory/missing_filter.txt', header=False,index=False) #Write SNPs to be filtered
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub --exclude accessory/missing_filter.txt --keep-allele-order --make-bed --out plink/{BASE}_sub_mflt") #Filter sites from full dataset
+        shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls --exclude accessory/missing_filter.txt --keep-allele-order --make-bed --out plink/{BASE}_sub_ctrls_mflt") #Filter sites from control
 
-rule LD_prune:
+rule LD_prune: #Use PLINK to prune SNPs down to those with LD < value specified in r2_threshold in config file
     input: f"plink/{BASE}_sub_ctrls_mflt.bed"
     output: f"plink/{BASE}_LDprune_ctrls.bed", f"plink/{BASE}.LDkeep.prune.in", f"plink/{BASE}_LDprune.bed"
     params:
-        WS = config['LD_pruning']['window_size'],
+        WS = config['LD_pruning']['window_size'], #LD pruning params extracted from config file
         SS = config['LD_pruning']['step_size'],
         RT = config['LD_pruning']['r2_threshold']
     shell:
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls_mflt --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep {plnk_rsrc(rule, plink_run_specs)}; "
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls_mflt --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune_ctrls {plnk_rsrc(rule, plink_run_specs)};"
-        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune {plnk_rsrc(rule, plink_run_specs)}"
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls_mflt --indep-pairwise {{params.WS}} {{params.SS}} {{params.RT}} --out plink/{BASE}.LDkeep {plnk_rsrc(rule, plink_run_specs)}; " #Find LD pruned SNPs
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_ctrls_mflt --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune_ctrls {plnk_rsrc(rule, plink_run_specs)};" #extract these from ctrls
+        f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract plink/{BASE}.LDkeep.prune.in --make-bed --out plink/{BASE}_LDprune {plnk_rsrc(rule, plink_run_specs)}" #extract from full dataset
 
-rule calcFreq:
+rule calcFreq: #Calculate allele frequencies
     input: f"plink/{BASE}_LDprune.bed"
     output: f"plink/{BASE}_LDprune.frq"
     shell:
         f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --freq --out plink/{BASE}_LDprune {plnk_rsrc(rule, plink_run_specs)}"
 
-rule calcIBS:
+rule calcIBS: #Calculate Identity-by-State via PLINK; parallelize by num_jobs code above
     input: f"plink/{BASE}_LDprune.bed", f"plink/{BASE}_LDprune.frq"
     output: f"plink/{BASE}.genome.{{job}}"
     shell:
         f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --maf {config['IBD']['maf']} --read-freq plink/{BASE}_LDprune.frq --genome --parallel {{wildcards.job}} {num_jobs} --out plink/{BASE} {plnk_rsrc(rule, plink_run_specs)}"
 
-rule catIBS:
-    input: expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs +1))
+rule catIBS: #Combine the IBS results from calcIBS
+    input: expand(f"plink/{BASE}.genome.{{job}}", job=range(1, num_jobs +1)) #This input list is what calls for calcIBS to parallelize by job IDs in range of num_jobs
     output: f"plink/{BASE}.genome.gz"
     run:
         shell(f"{CMD_PREFIX} cat plink/{BASE}.genome.* | gzip > {BASE}.genome.gz; mv {BASE}.genome.gz plink")
 
-rule IBD_filter_ctrls:
+rule IBD_filter_ctrls: #Filter highly related individuals from controls (for sHWE calculation)
     input: f"plink/{BASE}_LDprune_ctrls.bed", f"plink/{BASE}.genome.gz"
     output: f"plink/{BASE}_LDp_ctrls_IBDflt.bed"
     params:
-        awk_string = "\'{if($10>" + config['IBD']['pi_hat'] + ") print $0}\' > accessory/related_IBS_ctrls.txt"
+        awk_string = "\'{if($10>" + config['IBD']['pi_hat'] + ") print $0}\' > accessory/related_IBS_ctrls.txt" #awk command that extracts related individuals from IBS results
     run:
-        shell(f"zcat {{input[1]}} | awk {{params.awk_string}}; "
-        f"{CMD_PREFIX} Rscript scripts/filter_relateds.R -r accessory/related_IBS_ctrls.txt -o accessory/excluded_related_ctrls.txt; "
+        shell(f"zcat {{input[1]}} | awk {{params.awk_string}}; " #Extract related individuals
+        f"{CMD_PREFIX} Rscript scripts/filter_relateds.R -r accessory/related_IBS_ctrls.txt -o accessory/excluded_related_ctrls.txt; " #This script cycles through related pairs and keeps one 
         f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune_ctrls --remove accessory/excluded_related_ctrls.txt --keep-allele-order --make-bed --out plink/{BASE}_LDp_ctrls_IBDflt {plnk_rsrc(rule, plink_run_specs)}")
 
 # Downsample controls.  The implementation of sHWE currently does not allow ANY missing data.
@@ -228,43 +228,43 @@ rule IBD_filter_ctrls:
 # So for random sample of 50 individuals, and 2Million markers, we'd expect ~150k would be testable (i.e. complete genotype data)
 # With 100 individuals, you'd only get ~12k markers per downsample.  If no overlap in markers tested per downsample (best-case scenario), ~167 jobs would be required to test all 2Million SNPs
 # With 50, you'd need 13 jobs.
-rule generate_downsample_controls:
+rule generate_downsample_controls: #This rule will just create many, many lists of downsampled individuals from the fam file
     input: f"plink/{BASE}_LDp_ctrls_IBDflt.bed"
     output: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.txt"
     shell: f"{CMD_PREFIX} shuf -n {config['sHWE']['downsample_number']} plink/{BASE}_LDp_ctrls_IBDflt.fam > plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt"
 
-rule downsample_controls:
+rule downsample_controls: #This rule actually does the downsampling.  Note the --geno flag that enforces no missing data.
     input: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.txt"
     output: f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed"
     run:
         shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_ctrls_IBDflt --keep plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}}.txt --maf {config['sHWE']['maf']} "
               f"--geno 0.0 --keep-allele-order --make-bed --out plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.round}} {plnk_rsrc(rule, plink_run_specs)}")
 
-rule calc_downsampled_coverage:
+rule calc_downsampled_coverage: #This rule combines the unique markers that are to be tested (those with no missing data) in order for next rule to determine whether this exceeds the user-defined threshold
     input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round = range(0, int(config['sHWE']['downsample_rounds'])))
     output: "accessory/sHWE_downsampled_snps.txt"
     shell: f"cat plink/DS/{BASE}_LDprune_ctrls_DS*.bim | sort -T {os.getcwd()} | uniq > accessory/sHWE_downsampled_snps.txt"
 
-rule downsample_checkpoint:
+rule downsample_checkpoint: #If the number of SNPs to be tested by sHWE exceeds the value specified by config['sHWE']['test_threshold'], this rule creates a hidden file that is required as input to downstream rules
     input: "accessory/sHWE_downsampled_snps.txt"
     output: "accessory/.sHWE_downsample_pass.txt"
     run:
-        with open('accessory/sHWE_downsampled_snps.txt', 'r') as tested:
+        with open('accessory/sHWE_downsampled_snps.txt', 'r') as tested: #count up the SNPs that were combined in previous rule.
             for num_tested, line in enumerate(tested): pass
-        if num_tested < int(config['sHWE']['test_threshold']):
-            print(f"Failed Checkpoint\nReason: Fewer than {config['sHWE']['test_threshold']} unique SNPs downsampled for sHWE\n"
-                  f"Increase the value set for \'downsample_rounds\' entry in the \'sHWE\' section of the config file")
-            shell("cp accessory/sHWE_downsampled_snps.txt accessory/.sHWE_downsampled_snps.txt; rm accessory/sHWE_downsampled_snps.txt")
+        if num_tested < int(config['sHWE']['test_threshold']): #If not enough SNPs will be tested, print error message and DO NOT create output file.  The documentatino of the pipeline encourages the user to adjust the parameters of the downsampling (more rounds, fewer individuals, lower threshold, etc.)
+            print(f"Failed Checkpoint\nReason: Fewer than {config['sHWE']['test_threshold']} unique SNPs downsampled for sHWE (number downsampled = {num_tested})\n"
+                  f"Increase the value set for \'downsample_rounds\' entry in the \'sHWE\' section of the config file or reduce the sHWE 'test_threshold'")
+            shell("cp accessory/sHWE_downsampled_snps.txt accessory/.sHWE_downsampled_snps.txt; rm accessory/sHWE_downsampled_snps.txt") #This will remove output of prior rule, which will prompt the re-creation of accessory/sHWE_downsampled_snps.txt.  This is necessary to prompt the downsampling process when the user changes parameters of downsampling in config file.
         else:
-            shell('touch accessory/.sHWE_downsample_pass.txt')
+            shell('touch accessory/.sHWE_downsample_pass.txt') #If pass, then create hidden file required by next rule
 
-rule optimize_sHWE:
+rule optimize_sHWE: #sHWE requires specification of the true underlying number of populations in the input. If unknown (the typical case) paper suggests generating p-value distribution for a range of values and choose values with maximum entropy of p-value distribution.
     input: expand(f"plink/DS/{BASE}_LDprune_ctrls_DS{{round}}.bed", round=[x for x in range(0,int(config['sHWE']['downsample_rounds']))]), "accessory/.sHWE_downsample_pass.txt"
     output: f"sHWE/{BASE}_sHWE_{{d}}"
     shell:
         f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS0 -d {{wildcards.d}} -o sHWE/{BASE}_sHWE_{{wildcards.d}}"
 
-rule extract_optimum_popnum:
+rule extract_optimum_popnum: #Determine the optimum population number based on output of optimize_sHWE
     input: expand(f"sHWE/{BASE}_sHWE_{{d}}", d=config['sHWE']['pop_nums'].split(","))
     output: f"sHWE/.optimum_popnum.txt", "sHWE/entropy.txt"
     params:
@@ -273,46 +273,48 @@ rule extract_optimum_popnum:
         max_entropy = -9
         best_popnum = -9
         with open("sHWE/entropy.txt", 'w') as ent_file:
-            for file in input:
-                if not os.stat(file).st_size == 0:
-                    popnum = file.split("_")[-1]
+            for file in input: #Loop over input files and calculate entropy of each
+                if not os.stat(file).st_size == 0: #Make sure file is not empty
+                    popnum = file.split("_")[-1] #Extract population number from filename
                     dat = pd.read_table(file, header=None) # read in vector of p-values from sHWE
                     binned = pd.cut(dat.iloc[:,0], params.bins).value_counts(sort=False) # bin and count vector values
                     entropy = scipy.stats.entropy(binned.iloc[1:,]) # Calculate entropy of bin counts, excluding first bin that corrresponds to bin containing true positives (i.e. sites truly out of HWE)
                     ent_file.write(f"{popnum}\t{entropy}\n")
-                    if entropy > max_entropy:
+                    if entropy > max_entropy: #Store current value if better than prior best result.
                         best_popnum = popnum
                         max_entropy = entropy
                 else:
                     print(f"sHWE calculation failed for {popnum}; debug or remove this value from sHWE -> pop_nums in the config.yml file")
-        assert(max_entropy != -9 and best_popnum != -9)
-        with open("sHWE/.optimum_popnum.txt", 'w') as outfile: outfile.write(str(best_popnum))
+        assert(max_entropy != -9 and best_popnum != -9) #Make sure that we have successfully identified an optimum population number
+        with open("sHWE/.optimum_popnum.txt", 'w') as outfile: outfile.write(str(best_popnum)) #Write the optimum population number to hidden file.
 
-rule structHWE:
+rule structHWE: #Now that we have estimated the population number for sHWE, run sHWE on all downsampled datasets
     input: f"plink/DS/{BASE}_LDprune_ctrls_DS{{f}}.bed", f"sHWE/.optimum_popnum.txt", "sHWE/entropy.txt"
     output: f"sHWE/{BASE}_sHWE-DS{{f}}"
     params: threshold = config['sHWE']['threshold']
     run:
-        popfile = open(f"sHWE/.optimum_popnum.txt", 'r')
+        popfile = open(f"sHWE/.optimum_popnum.txt", 'r') #Grab the estimated population number from the hidden file
         popnum = popfile.readline()
         popfile.close()
         shell(f"{CMD_PREFIX} Rscript {CODE}/run_sHWE.R -p plink/DS/{BASE}_LDprune_ctrls_DS{{wildcards.f}} -d {popnum} -t {{params.threshold}} -o sHWE/{BASE}_sHWE-DS{{wildcards.f}} || touch sHWE/{BASE}_sHWE-DS{{wildcards.f}}")
 
 rule calc_test_coverage:
+    """the sHWE calculation will occassionally fail for particular SNPs, even though we have tried to select the markers that will be successful (via MAF and missingness filters).
+    Therefore, similar to calc_downsampled_coverage, we need to check again whether the number of TESTED SNPs has exceeded the threshold set in the config file"""
     input: expand(f"sHWE/{BASE}_sHWE-DS{{round}}", round = range(0, int(config['sHWE']['downsample_rounds'])))
     output: 'accessory/sHWE_tested_snps.txt'
     run:
         file_list = [x for x in glob.glob(f"plink/DS/{BASE}_LDprune_ctrls_DS*.bim")
-                     if os.path.exists(f"sHWE/{BASE}_sHWE-DS{int(x.strip('.bim').replace('DS', '').split('_')[-1])}.rmv.bim")]
-        with open('accessory/.tested_file_list.txt', 'w') as tested:
+                     if os.path.exists(f"sHWE/{BASE}_sHWE-DS{int(x.strip('.bim').replace('DS', '').split('_')[-1])}.rmv.bim")] #Create file list of all successful runs of sHWE (the .rmv.bim file will be present if sHWE completed successfully)
+        with open('accessory/.tested_file_list.txt', 'w') as tested: #Write file list to hidden file
             for file in file_list: tested.write(f"{file}\n")
-        if file_list: shell(f"find plink/DS/ -name \'{BASE}_LDprune_ctrls_DS*.bim\' | grep -v -w accessory/.tested_file_list.txt | xargs cat | cut -d \" \" -f 2 | sort -T {os.getcwd()} | uniq > accessory/sHWE_tested_snps.txt")
+        if file_list: shell(f"find plink/DS/ -name \'{BASE}_LDprune_ctrls_DS*.bim\' | grep -v -w accessory/.tested_file_list.txt | xargs cat | cut -d \" \" -f 2 | sort -T {os.getcwd()} | uniq > accessory/sHWE_tested_snps.txt") #This command prints markers from the input .bim files IFF they were successfully tested (in our file list)
 
-rule check_markers_tested:
+rule check_markers_tested: #Count up the tested markers and halt pipeline if not above user-specified threshold in config.
     input: 'accessory/sHWE_tested_snps.txt'
     output: "accessory/.sHWE_pass.txt"
     run:
-        with open('accessory/sHWE_tested_snps.txt', 'r') as tested:
+        with open('accessory/sHWE_tested_snps.txt', 'r') as tested: #Count up tested SNPs in file
             for num_tested, line in enumerate(tested): pass
         if num_tested < int(config['sHWE']['test_threshold']):
             print(f"Failed Checkpoint\nReason: Only {num_tested} markers were tested for sHWE, which is fewer than requested threshold ({config['sHWE']['test_threshold']})\n"
@@ -321,21 +323,24 @@ rule check_markers_tested:
         else:
             shell('touch accessory/.sHWE_pass.txt')
 
-rule filter_sHWE_SNPs:
+rule filter_sHWE_SNPs: #Will only proceed if hidden pass file from check_markers_tested checkpoint is present
     input: "accessory/.sHWE_pass.txt"
     output: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}_LDp_sHWE.bim"
     params: maf = config['sHWE']['maf']
     shell:
-            f"cat sHWE/{BASE}_sHWE-DS*.rmv.bim | sort | uniq > sHWE/sHWE.rmvd.snps.bim; "
-            f"cut -f 2 -d \" \" sHWE/sHWE.rmvd.snps.bim | grep -v -f - accessory/sHWE_tested_snps.txt > accessory/sHWE_kept_snps.bim; "
-            f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --extract accessory/sHWE_kept_snps.bim --keep-allele-order "
+            f"cat sHWE/{BASE}_sHWE-DS*.rmv.bim | sort | uniq > sHWE/sHWE.rmvd.snps.bim; " #Aggregate all SNPs that failed sHWE.
+            f"cut -f 2 -d \" \" sHWE/sHWE.rmvd.snps.bim | grep -v -f - accessory/sHWE_tested_snps.txt > accessory/sHWE_kept_snps.bim; " #Parse down to just SNP IDs and ensure they were tested
+            f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDprune --extract accessory/sHWE_kept_snps.bim --keep-allele-order " #Use PLINK to just retain tested and passing SNPs
             f"--make-bed --maf {{params.maf}} --out plink/{BASE}_LDp_sHWE {plnk_rsrc(rule, plink_run_specs)}"
 
 rule IBD_filter:
+    """Optionally remove related individuals from full dataset.  Relateds are removed from controls in above steps because these will violate HWE calcs.
+    However, the PCA calculation (and inclusion of kinship in GWAS) make GENSIS robust to relatedness, so relatives don't necessarily need to be removed.  
+    They will need to be removed from admixture mapping, so a list of related samples is still created and passed to admixture mapping step even when filter_relateds is set to false in config file"""
     input: f"plink/{BASE}_LDp_sHWE.bed", f"plink/{BASE}.genome.gz"
     output: f"plink/{BASE}_LDp_sHWE_IBDflt.bed", "accessory/excluded_related_samples.txt"
     params:
-        awk_string = "\'{if($10>" + config['IBD']['pi_hat'] + ") print $0}\' > accessory/related_IBS_results.txt",
+        awk_string = "\'{if($10>" + config['IBD']['pi_hat'] + ") print $0}\' > accessory/related_IBS_results.txt", #Extract relateds from PLINK results generated in prior steps
     run:
         if config['IBD']['filter_relateds'] == 'true':
             shell(f"zcat {{input[1]}} | awk {{params.awk_string}}; {CMD_PREFIX} Rscript {CODE}/filter_relateds.R -r accessory/related_IBS_results.txt -o accessory/excluded_related_samples.txt; "
@@ -344,14 +349,14 @@ rule IBD_filter:
             shell(f"zcat {{input[1]}} | awk {{params.awk_string}}; {CMD_PREFIX} Rscript {CODE}/filter_relateds.R -r accessory/related_IBS_results.txt -o accessory/excluded_related_samples.txt; "
                   f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE --keep-allele-order --make-bed --out plink/{BASE}_LDp_sHWE_IBDflt {plnk_rsrc(rule, plink_run_specs)}")
 
-rule controlMatch:
-    input: get_cM_inputs
+rule controlMatch: #Otionally use PLINK's clustering-based control matching to perform control matching
+    input: get_cM_inputs #IBD results are needed if control matching is requested.  This function will request these results to be produced if match_controls is set in config.
     output: f"accessory/samples.txt", f"input/{BASE}_CtlMat.bed", f"input/{BASE}_PCA.bed"
     run:
-        if config['match_controls'] == 'true':
+        if config['match_controls'] == 'true': #Run control-matching and parse results into a format that PLINK can use to extract matched samples.
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --allow-no-sex --read-genome {{input[1]}} --cluster cc --mcc 1 {config['control_number']} --out plink/{BASE} {plnk_rsrc(rule, plink_run_specs)}; "
                   f"{CMD_PREFIX} " + "awk '{{if(NF!=2) for (i = 2; i <= NF; i++) print $i}}'" + f" plink/{BASE}.cluster1 " + f"| cut -d \"(\" -f 1 | sed 's/_/\\t/' > accessory/samples2.txt; "
-                  "awk '{{split($2,a,\"_\"); printf(\"%s\\n%s\\n\",$2,a[1])}}' accessory/samples2.txt | sed 's/#//g' > accessory/samples.txt")
+                  "awk '{{split($2,a,\"_\"); printf(\"%s\\n%s\\n\",$2,a[1])}}' accessory/samples2.txt | sed 's/#//g' > accessory/samples.txt") #The sed command is a holdover from dealing with pound signs in sample names in StJude data
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --keep accessory/samples2.txt --make-bed --out input/{BASE}_CtlMat {plnk_rsrc(rule, plink_run_specs)}; "
                   f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --keep accessory/samples2.txt --make-bed --out input/{BASE}_PCA {plnk_rsrc(rule, plink_run_specs)}")
         else:
@@ -359,53 +364,53 @@ rule controlMatch:
             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --make-bed --out input/{BASE}_CtlMat {plnk_rsrc(rule, plink_run_specs)}; "
                   f"{CMD_PREFIX} plink --bfile plink/{BASE}_LDp_sHWE_IBDflt --make-bed --out input/{BASE}_PCA {plnk_rsrc(rule, plink_run_specs)}")
 
-rule calcPCA:
+rule calcPCA: #Calculate PCAs using PLINK.  This is not actually used for anything, but generated as a potentially useful accessory file.
     input: f"input/{BASE}_PCA.bed"
     output: f"plink/{BASE}.eigenvec"
     shell:
         f"{CMD_PREFIX} plink --bfile input/{BASE}_PCA --pca --out plink/{BASE} {plnk_rsrc(rule, plink_run_specs)}"
 
-rule get_globalAncestry:
+rule get_globalAncestry: #Aggregate the global ancestry results for input into admixMap_dataPrep
     input: "accessory/samples.txt"
     output: "{BASE}.globalancestry.txt"
     shell:
         f"{CMD_PREFIX} Rscript {CODE}/getGlobalAnc.R -d {RFMIX} -s accessory/samples.txt -o {{output}}"
 
-rule admixMap_dataPrep:
-    input: get_dataprep_input
+rule admixMap_dataPrep: #the admixMunge.R script formats the global ancestry, local ancestry, phenotype, and other covariate info into a format that is accepted by admixture mapping script (admixMap2.R)
+    input: get_dataprep_input #Don't require globalAncestry output if 'skip' is set to true under admixMapping
     output: f"input/{BASE}_chr{{CHROM}}.admixMap.dat"
     shell: f"grep -v -f accessory/excluded_related_samples.txt accessory/samples.txt > accessory/samples_admixMap.txt; {CMD_PREFIX} Rscript {CODE}/admixMunge.R -d {{input[2]}} -g {{input[1]}} -s accessory/samples_admixMap.txt -f input/{BASE}_CtlMat.fam -o {{output}}"
 
-rule admixMap:
+rule admixMap: #Perform admixture mapping for the ancestries labeled in config file under 'ancestry_predictors'
     input: f"input/{BASE}_chr{{CHROM}}.admixMap.dat"
     output: f"{BASE}_chr{{CHROM}}.admixmap.txt"
     threads: 4
     shell: f"{CMD_PREFIX} Rscript {CODE}/admixMap2.R -f {{input}} -o {BASE}_chr{{wildcards.CHROM}} -P {config['admixMapping']['ancestry_predictors']} -p {config['admixMapping']['other_predictors']} -c {{threads}}"
 
-rule cat_admixMap:
+rule cat_admixMap: #combine results from admixture mapping (performed per chromosome) into a single file
     input: expand(f"{BASE}_chr{{CHROM}}.admixmap.txt", CHROM = range(1,23))
-    output: f"{BASE}.admixmap.txt"
+    output: f"{BASE}.admixmap.txt" #The get_all_input does not request this output if 'skip' is set to true under admixMapping
     run:
         shell(f"head -n 1 {BASE}_chr1.admixmap.txt > header.txt; tail -q -n +2  {BASE}_chr*.admixmap.txt > body.txt; cat header.txt body.txt > {BASE}.admixmap.txt; rm header.txt; rm body.txt")
 
-rule genesis_prep:
+rule genesis_prep: #Calculate kinship & ancestry-informative PCAs and convert genotype data into accepted input for GENESIS.
     input: f"plink/{BASE}_sub_mflt.bed", f"plink/{BASE}_LDp_sHWE.bim"
-    output: f"input/{BASE}.genesis.pdat", f"input/{BASE}.genesis.grm.gds", f"input/{BASE}.genesis.gds"
+    output: f"input/{BASE}.genesis.pdat", f"input/{BASE}.genesis.grm.gds", f"input/{BASE}.genesis.gds", f"input/{BASE}.kinplot.png", f"input/{BASE}.pcair.varprop"
     run:
         cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R -p plink/{BASE}_sub_mflt -k {{input[1]}} -n {config['gwas']['pc_num']} -o input/{BASE} -t {config['kinship_threshold']}"
         if os.path.exists(config['covariate_file']): #Not tested
                 cmd += f" -C {config['covariate_file']}"
         shell(cmd)
 
-rule genesis_GWAS:
+rule genesis_GWAS: #Perform the GWAS
     input: f"input/{BASE}.genesis.gds", f"input/{BASE}.genesis.pdat", f"input/{BASE}.genesis.grm.gds"  # No control matching is done because SPA method accommodates imbalanced case/control ratios
     output: f"{BASE}.genesis.txt"
     threads: int(config['gwas']['cores'])
     run:
-        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['gwas']['other_predictors']} -o {BASE}.genesis.txt -c {{threads}}"
+        cmd = f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['gwas']['other_predictors']} -O {os.getcwd()} -o {BASE}.genesis.txt -c {{threads}}"
         shell(cmd)
 
-rule dosage_filter:
+rule dosage_filter: #Filter the dosage VCF (if provided) based on the SNPs present in the missingness-filtered PLINK files.
     input: f"plink/{BASE}_sub_mflt.bed"
     output: f"input/{BASE}_sub.vcf.gz"
     run:
@@ -420,21 +425,20 @@ rule dosage_filter:
             shell(cmd)
         else: print(f"Did not find VCF file at provided path: {VCF}")
 
-rule genesis_dosage_prep:
+rule genesis_dosage_prep: #PCAs are carried over from genesis_prep rule, so this step just converts dosage data into GENESIS input.  Was running into errors when calculating PCAs with dosage dat.
     input: f"input/{BASE}_sub.vcf.gz"
     output: f"input/{BASE}.dos.genesis.gds"
     threads: int(config['gwas']['cores'])
     shell: f"{CMD_PREFIX} Rscript {CODE}/genesis_prep.R --skip_pca -d {{input[0]}} -o input/{BASE}.dos -c {{threads}}; rm tmp.gds"
 
-rule genesis_dosage_GWAS:
+rule genesis_dosage_GWAS: #Perform GWAS on dosage data
     input: f"input/{BASE}.dos.genesis.gds", f"input/{BASE}.genesis.pdat", f"input/{BASE}.genesis.grm.gds"  # No control matching is done because SPA method accommodates imbalanced case/control ratios
-    output: f"{BASE}.dos.genesis.txt"
+    output: f"{BASE}.dos.genesis.txt" #This output is not requested by get_all_input if a VCF file is not provided under dosage_vcf in config
     threads: int(config['gwas']['cores'])
     shell: f"{CMD_PREFIX} Rscript {CODE}/genesis_gwas.R -g {{input[0]}} -p {{input[1]}} -k {{input[2]}} -n {config['gwas']['pc_num']} -C {config['gwas']['other_predictors']} -o {BASE}.dos.genesis.txt -c {{threads}}"
 
-#TODO: Finish make_report for admixMap
-rule make_report:
-    input: get_report_input
+rule make_report: #Final step to create a PDF report that summarizes the most relevant results.
+    input: get_report_input #Since several steps are optional, we need to conditionally determine the expected input for the report
     output: f"{BASE}-Mapping-report.pdf", f"{BASE}.admixmap.sig.txt", f"{BASE}.genesis.sig.txt"
     run:
         with open("scripts/gather_report_data.sh", 'w') as report_cmds:
@@ -450,9 +454,9 @@ rule make_report:
                           f"sHWE_entropy=\"sHWE/entropy.txt\", " \
                           f"sHWE_markers=\"accessory/sHWE_tested_snps.txt\", " \
                           f"ibd_ctrls=\"plink/{BASE}_LDp_ctrls_IBDflt.fam\", " \
-                          f"eigenval=\"{BASE}.pcair.varprop\", " \
-                          f"phenodat=\"{BASE}.genesis.pdat\", " \
-                          f"kinplot=\"{BASE}.kinplot.png\", " \
+                          f"eigenval=\"input/{BASE}.pcair.varprop\", " \
+                          f"phenodat=\"input/{BASE}.genesis.pdat\", " \
+                          f"kinplot=\"input/{BASE}.kinplot.png\", " \
                           f"mflt=\"accessory/missing_filter.txt\", " \
                           f"rulegraph_file=\"{BASE}-rulegraph.png\", "
             if f"{BASE}.admixmap.txt" in input:
@@ -468,7 +472,7 @@ rule make_report:
             report_cmds.write(report_line)
         shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf; mv *kinplot.png figures")
 
-rule annotate_snps: # get genotype frequencies from VCF
+rule annotate_snps: # get genotype frequencies from VCF; Have not been able to get this working for hg38.
     input: f"{BASE}.genesis.sig.txt"
     output: f"{BASE}.genesis.sig.annt.txt"
     run:
@@ -482,7 +486,7 @@ rule annotate_snps: # get genotype frequencies from VCF
             if os.path.exists(config['annotation']['typed_key']): cmd += f" -t {config['annotation']['typed_key']}"
             shell(cmd)
 
-rule annotate_regions: # get genotype frequencies from VCF
+rule annotate_regions: #Have not been able to get this working for hg38.
     input: f"{BASE}.admixmap.txt"
     output: f"{BASE}.admixmap.annt.txt"
     run:
@@ -490,24 +494,24 @@ rule annotate_regions: # get genotype frequencies from VCF
         dat = dat[dat['ANC.p.value'] < float(config['admixMapping']['sig_threshold'])]
         dat[['chm', 'spos', 'epos', 'ANC.estimate', 'ANC.std.error', 'ANC.statistic', 'ANC.p.value', 'anc']].to_csv(f"{BASE}.admixmap.tmp.bed", header=False, sep = "\t", index=False)
         gff = f"{os.getcwd()}/accessory/{os.path.basename(config['annotation']['gff'])}"
-        genome = f"{os.getcwd()}/accessory/{os.path.basename(config['annotation']['genome'])}"
+        genome = f"{os.getcwd()}/accessory/{os.path.basename(config['annotation']['genome'])}" #File containing chromosome sizes
         if config['annotation']['download_refs'] == 'true':
             shell(f" wget {config['annotation']['gff']} -O {gff}")
-            shell(f" wget {config['annotation']['genome']} -O {gff}")
+            shell(f" wget {config['annotation']['genome']} -O {genome}")
         elif os.path.exists(config['annotation']['gff']) and os.path.exists(config['annotation']['genome']):
             shell(f"cp {config['annotation']['gff']} {gff}")
-            shell(f"cp {config['annotation']['genome']} {gff}")
+            shell(f"cp {config['annotation']['genome']} {genome}")
         else:
             print("Could not find reference .gff and/or .genome file.  Check config file that paths are correctly specified and/or download requested.")
-        shell(f"{CMD_PREFIX} bedtools slop -i {BASE}.admixmap.tmp.bed -g {os.getcwd()}/accessory/hg19.genome -b {config['admixMapping']['annotation_buffer']} > {BASE}.admixmap.bed")
+        shell(f"{CMD_PREFIX} bedtools slop -i {BASE}.admixmap.tmp.bed -g {genome} -b {config['admixMapping']['annotation_buffer']} > {BASE}.admixmap.bed")
         cmd = f"{CMD_PREFIX} bedtools intersect -a {BASE}.admixmap.bed -b {gff} -loj | "  \
         "awk '{{if($11==\"gene\") print $0}}' | awk '{{split($NF,a,\";\"); $NF=\"\"; for(x in a) if(a[x] ~ /Name=/) print $0,a[x]}}' | sed 's/Name=//' > {BASE}.admixmap.preannt.txt"
         shell(cmd)
         shell(f"{CMD_PREFIX} Rscript {CODE}/admixAnnt.R -i input/ -p {BASE}.admixmap.preannt.txt -b {config['admixMapping']['annotation_buffer']} -o {{output}}")
 
 
-rule conditional_analysis:
-    input: f"{BASE}.genesis.gds", f"{BASE}.genesis.pdat", f"{BASE}.genesis.grm.gds"
+rule conditional_analysis: #Perform conditional analyses for each SNP ID listed in snp_list under conditional_analysis in config.  That is, control for this marker's genotypes when doing GWAS
+    input: f"input/{BASE}.genesis.gds", f"input/{BASE}.genesis.pdat", f"input/{BASE}.genesis.grm.gds"
     output: f'conditional-analysis/{BASE}-{{marker}}.genesis.txt'
     run:
         if os.path.exists(config['conditional_analysis']['snp_list']):
@@ -523,8 +527,8 @@ rule conditional_analysis:
                 print(f"Did not find {wildcards.marker} in plink/{BASE}_sub_mflt")
                 shell(f"touch conditional-analysis/{BASE}-{wildcards.marker}.genesis.txt")
 
-rule combine_conditional_analysis:
-    input: get_conditional_analysis_input
+rule combine_conditional_analysis: #Combine results of conditional analyses
+    input: get_conditional_analysis_input #This function parses snp_list to generate the expected output from conditional_analysis
     output: f"conditional-analysis/{BASE}.conditional-analysis.genesis.txt"
     shell:
         f"for f in conditional-analysis/*genesis.txt; do " \
@@ -533,22 +537,11 @@ rule combine_conditional_analysis:
         "awk '{{printf(\"marker_covar\\t%s\\n\", $0)}}' > conditional-analysis/head.txt; " \
         f"cat conditional-analysis/head.txt conditional-analysis/tail.txt > {{output}}"
 
-# rule polygenic_scores:
-#     input: f"{BASE}.genesis.txt"
-#     output: f"PRS/{BASE}.{fname}.prs.txt"
-#     run:
-#         if not os.path.exists('PRS'): os.mkdir('PRS')
-#         if os.path.exists(config['polygenic_scores']['snp_list']):
-#             fname = os.path.basename(config['polygenic_scores']['snp_list']).replace(".txt", "")
-#             shell(f"{CMD_PREFIX} plink --bfile plink/{BASE}_sub_mflt --extract {config['polygenic_scores']['snp_list']} --keep-allele-order --allow-no-sex --recodeAD --out PRS/{BASE}.{fname}.PRS_genotypes {plnk_rsrc(rule, plink_run_specs)} || true")
-#             shell(f"head -n 1 {BASE}.genesis.txt > PRS/{BASE}.{fname}.head.txt; grep -f {config['polygenic_scores']['snp_list']} {BASE}.genesis.txt > PRS/{BASE}.{fname}.body.txt")
-#             shell(f"cat PRS/{BASE}.{fname}.head.txt PRS/{BASE}.{fname}.body.txt > PRS/{BASE}.{fname}.PRS_betas.txt; rm PRS/{BASE}.{fname}.head.txt; rm PRS/{BASE}.{fname}.body.txt")
-#             shell(f"{CMD_PREFIX} Rscript scripts/PRS.R -g PRS/{BASE}.{fname}.PRS_genotypes.raw -b PRS/{BASE}.{fname}.PRS_betas.txt -o PRS/{BASE}.{fname}")
-#         else:
-#             print("Did not find snp_list")
-
 #Fine mapping should be done with dosage info.  Susie requires no missing data which is much easier to satisfy with expected dosage.
 rule fine_map:
+    """Note that this step does not actually perform fine mapping.  It just extracts the necessary dosage info. 
+    I was still testing SuSie when I left, so did not fully develop its implementation here.
+    See the notebook ALL_finemapping.ipynb for my attempts to run SuSie"""
     input: f"input/{BASE}_sub.pgen"
     output: f"fine-mapping/{BASE}-{{marker}}.susie.txt"
     run:
