@@ -72,7 +72,7 @@ The critical files responsible for executing the pipeline are contained in the _
 
 * Snakefile
 * config.yml
-* cluster.yaml  
+* cluster_slurm.yaml  
 
 The _Snakefile_ is the primary workhouse of snakemake, which specifies the dependencies of various parts of the pipeline and coordinates execution.  No modifications to the _Snakefile_ are necessary.  
 
@@ -84,22 +84,18 @@ The entire pipeline can be executed on a local machine (not recommended) or on a
 
 However, multiple steps in the pipeline have high resource demands, and so are unlikely to be able to be run locally.  This option exists primarily for testing and troubleshooting, so the remainder of the  documentation assumes that the pipeline will be executed on an HPC.  In order to coordinate the use of the HPC, the following modifications to the snakemake command are required:
 
-    snakemake --cluster "qsub -l {cluster.l} -M {cluster.M} -A {cluster.A} -m {cluster.m} -o {cluster.o} -e {cluster.e} -r {cluster.r}" --cluster-config workflow/cluster.yaml -j 32
+    snakemake --cluster "sbatch --no-requeue --partition={cluster.p} --time={cluster.time} --mem={cluster.mem} --ntasks={threads} --nodes={cluster.nodes} --mail-user={cluster.mail-user} --mail-type={cluster.mail-type} -o {cluster.o} -e {cluster.e} -A {cluster.A}" --cluster-config workflow/cluster_yale.yaml -j 32
 
-where -j specifies the number of jobs that can be submitted at once.  Note that the 'qsub' command is specific to the commonly-used **PBS** scheduler.  To run on a different HPC scheduler, the command would need to be modified accordingly.  For example, to coordinate submission to a **slurm** scheduler, the following command would be used:
+where -j specifies the number of jobs that can be submitted at once. 
 
-    snakemake --cluster "sbatch --no-requeue --time={cluster.time} --mem-per-cpu={cluster.mem-per-cpu} --ntasks={cluster.ntasks} --nodes={cluster.nodes} --mail-user={cluster.mail-user} --mail-type={cluster.mail-type} -o {cluster.o} -e {cluster.e} -A {cluster.A}"" --cluster-config workflow/cluster_yale.yaml -j 32
-
-Note also that a different _cluster.yaml_ file is required for the different scheduler.  If you open and inspect the _cluster.yaml_ file vs the _cluster_yale.yaml_ file, you will see syntax that is specific to PBS and slurm schedulers, respectively.  
-
-One additional change in the _config.yml_ is needed in order to correctly submit jobs to the HPC.  The relevant entries are under the `run_settings` section of the config file:
+One additional setting in the _config.yml_ is needed in order to correctly submit jobs to the HPC.  The relevant entries are under the `run_settings` section of the config file:
 
     run_settings:
       local_run: 'false'
-      cluster_config: 'workflow/cluster.yaml'
-      scheduler: 'pbs'
+      cluster_config: 'workflow/cluster_slurm.yaml'
+      scheduler: 'slurm'
       
-Here, it is necessary that the `cluster_config` entry is set to the path of the cluster.yaml file that will be used in the snakemake command.  Also, the scheduler must correspond to the syntax used in the snakemake command and cluster.yaml file.  I should point out that these additional changes are needed for responsibly using PLINK within a snakemake framework, and are not directly needed for snakemake.  PLINK will attempt to auto-detect available resources upon running regardless of the resources that were requested when the job was submitted.  Therefore, we have to read and parse the requested resources in the cluster config file in order for them to be communicated to PLINK from within the Snakefile.  
+Here, it is necessary that the `cluster_config` entry is set to the path of the cluster_slurm.yaml file that will be used in the snakemake command.  Also, the scheduler must correspond to the syntax used in the snakemake command and cluster.yaml file.  I should point out that these additional changes are needed for responsibly using PLINK within a snakemake framework, and are not directly needed for snakemake.  PLINK will attempt to auto-detect available resources upon running regardless of the resources that were requested when the job was submitted.  Therefore, we have to read and parse the requested resources in the cluster config file in order for them to be communicated to PLINK from within the Snakefile.  
 
 ### Other notes
 
@@ -109,14 +105,32 @@ One attractive feature of _snakemake_ is its ability to keep track of the progre
 
 To run a specific part of the pipeline, do:
 
-    snakemake -R <rule_name> --cluster "qsub -l {cluster.l} -M {cluster.M} -A {cluster.A} -m {cluster.m} -o {cluster.o} -e {cluster.e} -r {cluster.r}" --cluster-config workflow/cluster.yaml -j 20 --rerun-incomplete
+    snakemake -R <rule_name> --cluster "sbatch --no-requeue --partition={cluster.p} --time={cluster.time} --mem={cluster.mem} --ntasks={threads} --nodes={cluster.nodes} --mail-user={cluster.mail-user} --mail-type={cluster.mail-type} -o {cluster.o} -e {cluster.e} -A {cluster.A}" --cluster-config workflow/cluster_yale.yaml -j 20 --rerun-incomplete
 
-where _rule\_name_ indicates the 'rule' (i.e. job) in the Snakefile that you wish to run.
+where _rule\_name_ indicates the 'rule' (i.e. job) in the Snakefile that you wish to run.  Or, you can request a specific file by providing the filename at the end of the command.  You may need to include the -F (i.e. force) if the output file already exists and you want to overwrite it.
 
 Also, it is often very helpful to do a 'dry-run' of the pipeline in which the different steps and dependencies are printed to screen, but no actual jobs are executed.  This can be helpful to ensure that config entries are correct, etc.  To perform a dry-run, do:
 
     snakemake -nrp
     
+NOTE: It is convenient to make an alias in your ~/.bashrc file to run snakemake on the cluster without having to type the --cluster... part of the command every time.  For me, it looked like this:
+
+    alias snakeslurm="snakemake -k --cluster 'sbatch --no-requeue --partition={cluster.p} --time={cluster.time} --mem={cluster.mem} --ntasks={threads} --job-name={cluster.job-name} --nodes={cluster.nodes} --mail-user={cluster.mail-user} --mail-type={cluster.mail-type} -o {cluster.o} -e {cluster.e} -A {cluster.A}' --cluster-config workflow/cluster_slurm.yaml"
+
+This way, I can just do:
+
+    snakeslurm -j 25
+
+To launch snakemake on the cluster.
+    
+#### Unlocking the working directory
+
+When _snakemake_ is launched it will place a lock on the working directory, such that other _snakemake_ runs are prohibited from starting.  When _snakemake_ finishes or errors out, it will remove this lock.  However, sometimes this lock is not correctly removed.  This can occur, for example, if the VPN drops connection while _snakemake_ is running.  If you receive a "Directory cannot be locked..." error message from _snakemake_ and you are sure that no other _snakemake_ processes are currently running, you can unlock the directory by:
+
+    snakemake --unlock
+    
+Then, you can run the usual _snakemake_ command to restart the pipeline.
+
 #### Debugging and error reports
 
 Should an error be encountered in a job, snakemake will halt the pipeline and indicate in the terminal that an error has occurred.  The offending job will also be printed in red in the terminal window.  More information on why the job failed can be found in the 'stdout' and 'stderr' files that are output to the _'OandE'_ directory and will be labelled with the jobname.
@@ -127,14 +141,29 @@ Should an error be encountered in a job, snakemake will halt the pipeline and in
 
 ### Input Data
 
-Currently, the pipeline is set up only for binary case/control phenotypes, but this could be modified in the future.
+There are three possible inputs that can be specified in the config file: a set of plink files containing hard-coded genotypes, a VCF file containing dosage values, and a directory containing the output of RFMix (which can be generated via the [AncInf](https://github.com/pmonnahan/AncInf) pipeline).  Only the first of these is required, and the plink prefix for these files are specified in the 'plink' entry under the 'query' section in the config file. 
 
-    query: "PATH_TO_PLINK_PREFIX" 
+    query: 
+        plink: "PATH_TO_PLINK_PREFIX"  
+        dosage: "none"
     samples: "all" 
     
-The query field in the config file should be set to the PLINK prefix for the single set of PLINK files containing all data.  It is assumed that sex will be specified in the .fam file.
+  It is assumed that sex will be specified in the .fam file.  Currently, the pipeline is set up only for binary case/control phenotypes, but this could be modified in the future. 
 
-The samples field can be set to the path of a file containing individuals to be kept from merged query file. One sample per line and must match exactly the sample names in the RFMix output and the query .fam file.  Beware that '#' characters in sample names will likely lead to errors.  
+The samples field can be set to the path of a file containing individuals to be kept from merged query file. One sample per line and must match exactly the sample names in the RFMix output and the query .fam file.  Beware that '#' characters in sample names will likely lead to errors.
+
+If the genotype data has been imputed, it is advisable to perform the GWAS using the estimated dosage instead of hard-genotype calls.  A VCF containing this dosage information can be provided in the 'dosage' entry under the 'query' section of the config file (see above). Such a dosage VCF is created by the [post-imputation](https://github.com/pmonnahan/DataPrep/postImpute) QC pipeline.  If this dosage VCF is provided, the pipeline will run a GWAS on the hard-coded (file suffix: _.genesis.txt_) genotype data as well as the dosage data (file suffix: _.dos.genesis.txt_) If a dosage VCF is not available, set this entry to 'none', and the pipeline will skip the dosage GWAS.
+
+The last (optional) input is a directory containing the output of RFMix.  The pipeline will look for a _.Q_ and _.msp.tsv_ file for each chromosome and format this data for (and perform) admixture mapping. This directory is provided in the 'rfmix' entry under the 'admixMapping' section: 
+
+    admixMapping:
+            skip: 'false' # Skip admixture mapping entirely
+            rfmix: "OUTPUT_DIRECTORY_OF RFMIX" # MODIFY; can be left alone if 'skip' is set to 'false'
+            
+If you don't want to perform admixture mapping, simply set 'skip' to 'true' and leave the 'rfmix' entry as is.  
+
+A final possibility is that you just want to perform admixture mapping, but don't want (or care) to perform a GWAS.  However, a set of plink files is still required because this data is used in some of the steps leading up to admixture mapping (e.g. identifying and excluding relatives).  In its current form, it is not possible to skip the GWAS in this pipeline, and since there is no real harm in doing the GWAS, I suggest just letting it run.  Additionally, you can just use the same set of plink files used for the ancestry inference pipeline for this pipeline as well.
+
 
 ### Data Preparation
     
@@ -263,14 +292,16 @@ All output will be contained in the parent directory labelled with the prefix pr
  
  The table below provides a list of results and the corresponding file suffix.
     
-| Result  | Suffix |
-| ------------- | ------------- |
-| GENESIS GWAS  | .genesis.txt  |
-| Admixture Mapping  | .admixmap.txt  |
-| PC-AiR Variance Proportions  | .pcair.varprop  |
-| Phenotype Data  | .genesis.pdat  |
-| PC-AiR Related Samples  | .pcair.rels  |
-| PC-AiR Unrelated Samples  | .pcair.unrels  |
+| Result  | Suffix | Directory |
+| ------------- | ------------- | ------------- |
+| GENESIS GWAS  | .genesis.txt  | main |
+| GENESIS dosage GWAS  | .dos.genesis.txt  | main |
+| Admixture Mapping results | .admixmap.txt  | main |
+| Admixture Mapping input | .admixmap.dat  | input | 
+| PC-AiR Variance Proportions  | .pcair.varprop  | input |
+| Phenotype Data  | .genesis.pdat  | input | 
+| PC-AiR Related Samples  | .pcair.rels  | input | 
+| PC-AiR Unrelated Samples  | .pcair.unrels  | input |
 
 Additionally, a report summarizing much of the intermediate and final results is produced at the end of the pipeline and will end with the suffix 'Mapping-report.pdf'.  Figures in this report are also saved in the 'figures' directory that is created.
 
@@ -281,6 +312,8 @@ Lastly, SNPs whose p-value was below that specified at the 'sig_threshold' entry
 
 This file should be a PLINK-formatted bim file containing the rsIDs.  I have already generated this file for hg19 rsIDs and can share this file upon request.
 
+NOTE: Annotation was only tested for hg19, and I was unable to get SnpEff working with hg38. 
+
 ### Conditional Analysis (Optional)
 
 An optional final step is to perform conditional analyses to locally search for additional significant variants after controlling for the effects of a particular marker.  
@@ -289,10 +322,17 @@ An optional final step is to perform conditional analyses to locally search for 
         snp_list: 'none'
         distance: '100000'
 
-The 'snp_list' entry should specify a file path containing one marker ID (chr:position) per line.  One possibility is to use the 'significant' markers that were annotated at the final step.  For each SNP in the file, the program will perform a GWAS for all SNPs within the specified 'distance' on either side.  Importantly, the genotypes at the focal SNP are included as an additional covariate.
+The 'snp_list' entry should specify a file path containing one marker ID (chr:position) per line.  One possibility is to use the 'significant' markers that were annotated at the final step.  For each SNP in the file, the program will perform a GWAS for all SNPs within the specified 'distance' (in bp) on either side.  Importantly, the genotypes at the focal SNP are included as an additional covariate.
 
 In order to run this step you must explicitly request the output via:
 
-    snakemake conditional-analysis/<outname>.conditional-analysis.genesis.txt --cluster "qsub -l {cluster.l} -M {cluster.M} -A {cluster.A} -m {cluster.m} -o {cluster.o} -e {cluster.e} -r {cluster.r}" --cluster-config workflow/cluster.yaml -j 1
+    snakemake conditional-analysis/<outname>.conditional-analysis.genesis.txt --cluster "sbatch --no-requeue --partition={cluster.p} --time={cluster.time} --mem={cluster.mem} --ntasks={cluster.ntasks} --nodes={cluster.nodes} --mail-user={cluster.mail-user} --mail-type={cluster.mail-type} -o {cluster.o} -e {cluster.e} -A {cluster.A}" --cluster-config workflow/cluster_slurm.yaml -j 2
 
  , where 'outname' should be replaced by the value in the 'outname' entry in the config file.  
+
+### Fine Mapping (Optional)
+Fine mapping was not fully implemented in this pipeline, but likely could be with a little debugging.  There is a fine-mapping rule in the Snakefile, but this rule simply extracts the data from the dosage files that can be used as input into SuSie (a fine-mapping software).  This data can be called for by:
+
+    snakemake fine-mapping/susie.txt
+    
+This will create a directory called fine-mapping and output a dataset (suffix .susie.txt) for each marker (+- buffer value) specified in the SNP list provided in the config.yaml file.  

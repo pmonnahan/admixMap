@@ -32,8 +32,8 @@ for directory in dirs:
 
 #Configure the singularity command.  All necessary paths that will be used by singularity must be provided in the --bind statement
 if config['singularity']['use_singularity'] == 'true' and config['singularity']['image'] != "none":
-    bind_dirs = [x for x in [QUERY, VCF, config['samples'], config['annotation']['rsIDs'], config['annotation']['typed_key']] if os.path.exists(x) and x!="/"]
-    bind_paths = ",".join([x for x in set([os.path.dirname(x) for x in bind_dirs] + dirs) if os.path.isdir(x)])
+    bind_dirs = [x for x in [QUERY, VCF, config['samples'], config['annotation']['rsIDs'], config['annotation']['typed_key']] if os.path.exists(os.path.dirname(x)) and x!="/"]
+    bind_paths = ",".join([x for x in set([os.path.dirname(x) for x in bind_dirs] + dirs) if os.path.isdir(x) and x!="/"])
     if config['admixMapping']['skip'].lower() != 'true': bind_paths += f",{RFMIX}"
     CMD_PREFIX = f"set +u; {config['singularity']['module']}; singularity exec --bind {bind_paths} {config['singularity']['image']}"
     CODE = config['singularity']['code']
@@ -470,7 +470,7 @@ rule make_report: #Final step to create a PDF report that summarizes the most re
                 shell(f"touch {BASE}.dos.genesis.sig.txt")
             report_line += f"config_file=\"workflow/config.yml\"))\' | R --vanilla"
             report_cmds.write(report_line)
-        shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf; mv *kinplot.png figures")
+        shell(f"{CMD_PREFIX} sh scripts/gather_report_data.sh; mv scripts/{BASE}-Mapping-report.pdf {BASE}-Mapping-report.pdf; mv input/*kinplot.png figures")
 
 rule annotate_snps: # get genotype frequencies from VCF; Have not been able to get this working for hg38.
     input: f"{BASE}.genesis.sig.txt"

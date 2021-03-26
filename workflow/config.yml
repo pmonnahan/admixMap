@@ -62,7 +62,7 @@ annotation:
   typed_key: 'none'
 conditional_analysis:
     snp_list: 'none' # One column with snpIDs
-    distance: '100' #in kb!!!
+    distance: '100'
 fine_mapping:
     snp_list: 'none'
     distance: '100' #in kb!!!
